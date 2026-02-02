@@ -935,6 +935,15 @@ async function toggleSave(
     if (removed) {
       session.savedMessageIds.delete(msg.messageId);
       session.savedItems = session.savedItems.filter((item: ResolvedSavedItem) => item.anchor.messageId !== msg.messageId);
+
+      // Refresh allSavedItems cache
+      session.allSavedItems = await loadAllSavedItems();
+
+      // If Saved tab is active, re-render to reflect removal
+      if (activeTab === 'saved') {
+        renderSavedPanel(session);
+      }
+
       saveBtn.innerHTML = '☆';
       saveBtn.style.color = '#9ca3af';
       saveBtn.title = 'Save';
@@ -946,6 +955,15 @@ async function toggleSave(
     await addSavedItem(savedItem);
     session.savedMessageIds.add(msg.messageId);
     session.savedItems.push({ ...savedItem, status: 'active', resolvedMessageId: msg.messageId });
+
+    // Refresh allSavedItems cache
+    session.allSavedItems = await loadAllSavedItems();
+
+    // If Saved tab is active, re-render to show new item
+    if (activeTab === 'saved') {
+      renderSavedPanel(session);
+    }
+
     saveBtn.innerHTML = '★';
     saveBtn.style.color = '#f59e0b';
     saveBtn.title = 'Remove';
@@ -1123,9 +1141,26 @@ function setupTitleEdit(session: Session): void {
 }
 
 /**
+ * Checks if the extension context is still valid (not reloaded)
+ */
+function isExtensionContextValid(): boolean {
+  try {
+    return !!chrome.runtime?.id;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Initialize the extension
  */
 function init(): void {
+  // Exit early if extension context is invalid (extension was reloaded)
+  if (!isExtensionContextValid()) {
+    console.warn('[ZeroRetry Index] Extension was reloaded. Please refresh the page.');
+    return;
+  }
+
   // Get the current page URL and find matching adapter
   const url = new URL(window.location.href);
   const adapter = getAdapterForUrl(url);

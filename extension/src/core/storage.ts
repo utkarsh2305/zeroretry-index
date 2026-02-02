@@ -14,14 +14,44 @@ const MIGRATION_KEY = 'zeroretry:migrationVersion';
 const CURRENT_MIGRATION_VERSION = 1;
 
 /**
+ * Checks if the extension context is still valid
+ * Returns false if the extension was reloaded (user needs to refresh page)
+ */
+export function isExtensionContextValid(): boolean {
+  try {
+    // Check both runtime and storage APIs are available
+    return !!chrome.runtime?.id && !!chrome.storage?.local;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wraps storage operations with context validation
+ * Silently fails if context is invalidated (user needs to refresh)
+ */
+function handleStorageError(error: unknown, operation: string): void {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+
+  if (errorMessage.includes('Extension context invalidated')) {
+    // This is expected after extension reload - user needs to refresh the page
+    console.warn(`[ZeroRetry Index] ${operation}: Extension was reloaded. Please refresh the page.`);
+  } else {
+    console.error(`[ZeroRetry Index] ${operation} failed:`, error);
+  }
+}
+
+/**
  * Loads all bookmarks from storage
  */
 export async function loadBookmarks(): Promise<Bookmark[]> {
+  if (!isExtensionContextValid()) return [];
+
   try {
     const result = await chrome.storage.local.get(BOOKMARKS_KEY);
     return result[BOOKMARKS_KEY] || [];
   } catch (error) {
-    console.error('[ZeroRetry Index] Failed to load bookmarks:', error);
+    handleStorageError(error, 'Load bookmarks');
     return [];
   }
 }
@@ -30,10 +60,12 @@ export async function loadBookmarks(): Promise<Bookmark[]> {
  * Saves all bookmarks to storage
  */
 export async function saveBookmarks(bookmarks: Bookmark[]): Promise<void> {
+  if (!isExtensionContextValid()) return;
+
   try {
     await chrome.storage.local.set({ [BOOKMARKS_KEY]: bookmarks });
   } catch (error) {
-    console.error('[ZeroRetry Index] Failed to save bookmarks:', error);
+    handleStorageError(error, 'Save bookmarks');
   }
 }
 
@@ -174,6 +206,8 @@ function migrateBookmarkToSavedItem(bookmark: Bookmark): SavedItem {
  * Performs one-time migration from bookmarks to saved items
  */
 export async function runMigration(): Promise<void> {
+  if (!isExtensionContextValid()) return;
+
   try {
     const result = await chrome.storage.local.get([MIGRATION_KEY, BOOKMARKS_KEY]);
     const currentVersion = (result[MIGRATION_KEY] as number | undefined) || 0;
@@ -196,7 +230,7 @@ export async function runMigration(): Promise<void> {
       await chrome.storage.local.set({ [MIGRATION_KEY]: CURRENT_MIGRATION_VERSION });
     }
   } catch (error) {
-    console.error('[ZeroRetry Index] Migration failed:', error);
+    handleStorageError(error, 'Migration');
   }
 }
 
@@ -204,12 +238,14 @@ export async function runMigration(): Promise<void> {
  * Loads all saved items from storage (for current conversation filtering)
  */
 export async function loadSavedItems(): Promise<SavedItem[]> {
+  if (!isExtensionContextValid()) return [];
+
   try {
     await runMigration(); // Ensure migration runs first
     const result = await chrome.storage.local.get(SAVED_ITEMS_KEY);
     return (result[SAVED_ITEMS_KEY] as SavedItem[] | undefined) || [];
   } catch (error) {
-    console.error('[ZeroRetry Index] Failed to load saved items:', error);
+    handleStorageError(error, 'Load saved items');
     return [];
   }
 }
@@ -224,10 +260,12 @@ export const loadAllSavedItems = loadSavedItems;
  * Saves all saved items to storage
  */
 export async function saveSavedItems(items: SavedItem[]): Promise<void> {
+  if (!isExtensionContextValid()) return;
+
   try {
     await chrome.storage.local.set({ [SAVED_ITEMS_KEY]: items });
   } catch (error) {
-    console.error('[ZeroRetry Index] Failed to save saved items:', error);
+    handleStorageError(error, 'Save saved items');
   }
 }
 
