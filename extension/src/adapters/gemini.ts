@@ -1,40 +1,59 @@
 /**
- * Claude Adapter
- * Implements ChatAdapter interface for Claude (https://claude.ai)
+ * Gemini Adapter
+ * Implements ChatAdapter interface for Google Gemini (https://gemini.google.com)
  */
 
 import { ChatAdapter, ChatMessage, ChatPlatformId, ChatRole, TitleResult } from './base';
 
 /**
- * DOM selectors for Claude message containers
+ * DOM selectors for Gemini message containers
+ * Note: These selectors are estimated and may need adjustment based on actual DOM structure
  */
-const USER_MESSAGE_SELECTOR = '[data-testid="user-message"]';
-const ASSISTANT_MESSAGE_SELECTOR = '[data-testid="assistant-message"]';
+const USER_MESSAGE_SELECTOR = '[data-message-author-type="human"]';
+const ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-type="model"]';
+
+// Fallback selectors
+const USER_FALLBACK_SELECTOR = '.user-query, .human-turn, .query-text';
+const ASSISTANT_FALLBACK_SELECTOR = '.model-response, .model-turn, .response-text';
 
 /**
- * Claude adapter implementation
+ * Gemini adapter implementation
  */
-class ClaudeAdapter implements ChatAdapter {
-  readonly id: ChatPlatformId = 'claude';
+class GeminiAdapter implements ChatAdapter {
+  readonly id: ChatPlatformId = 'gemini';
 
   private messageObserver: MutationObserver | null = null;
   private titleObserver: MutationObserver | null = null;
   private lastConversationId: string | null = null;
 
   /**
-   * Checks if the given URL is from Claude
+   * Checks if the given URL is from Google Gemini
    */
   match(url: URL): boolean {
-    return url.hostname === 'claude.ai';
+    return url.hostname === 'gemini.google.com';
   }
 
   /**
    * Returns the current conversation ID from the URL
-   * URL pattern: https://claude.ai/chat/<conversation-id>
+   * URL patterns:
+   * - https://gemini.google.com/app/<conversation-id>
+   * - https://gemini.google.com/chat/<conversation-id>
    */
   getConversationId(): string | null {
-    const match = window.location.pathname.match(/^\/chat\/([a-f0-9-]+)/i);
-    return match ? match[1] : null;
+    // Try /app/<id> pattern
+    const appMatch = window.location.pathname.match(/^\/app\/([a-zA-Z0-9_-]+)/i);
+    if (appMatch) {
+      return appMatch[1];
+    }
+
+    // Try /chat/<id> pattern
+    const chatMatch = window.location.pathname.match(/^\/chat\/([a-zA-Z0-9_-]+)/i);
+    if (chatMatch) {
+      return chatMatch[1];
+    }
+
+    // Fallback: generate ID from URL if no explicit ID found
+    return this.generateFallbackId();
   }
 
   /**
@@ -47,6 +66,14 @@ class ClaudeAdapter implements ChatAdapter {
       hash |= 0;
     }
     return Math.abs(hash).toString(36);
+  }
+
+  /**
+   * Generates a fallback conversation ID when URL doesn't contain one
+   */
+  private generateFallbackId(): string {
+    const hash = this.simpleHash(window.location.pathname + window.location.search);
+    return `fallback-${hash}`;
   }
 
   /**
@@ -65,23 +92,28 @@ class ClaudeAdapter implements ChatAdapter {
   }
 
   /**
-   * Returns all messages in the current conversation
+   * Finds message elements using primary or fallback selectors
    */
-  getMessages(): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-
-    // Query both user and assistant messages
-    const userMessages = document.querySelectorAll(USER_MESSAGE_SELECTOR);
-    const assistantMessages = document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR);
-
-    // Create a map of all messages with their positions
+  private findMessageElements(): Array<{ element: HTMLElement; role: ChatRole }> {
     const allMessages: Array<{ element: HTMLElement; role: ChatRole }> = [];
 
-    userMessages.forEach((el) => {
+    // Try primary selectors first
+    let userElements = document.querySelectorAll(USER_MESSAGE_SELECTOR);
+    let assistantElements = document.querySelectorAll(ASSISTANT_MESSAGE_SELECTOR);
+
+    // If primary selectors don't find anything, try fallbacks
+    if (userElements.length === 0) {
+      userElements = document.querySelectorAll(USER_FALLBACK_SELECTOR);
+    }
+    if (assistantElements.length === 0) {
+      assistantElements = document.querySelectorAll(ASSISTANT_FALLBACK_SELECTOR);
+    }
+
+    userElements.forEach((el) => {
       allMessages.push({ element: el as HTMLElement, role: 'user' });
     });
 
-    assistantMessages.forEach((el) => {
+    assistantElements.forEach((el) => {
       allMessages.push({ element: el as HTMLElement, role: 'assistant' });
     });
 
@@ -93,19 +125,28 @@ class ClaudeAdapter implements ChatAdapter {
       return 0;
     });
 
+    return allMessages;
+  }
+
+  /**
+   * Returns all messages in the current conversation
+   */
+  getMessages(): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+    const allMessages = this.findMessageElements();
+
     // Build message array
     allMessages.forEach((msg, index) => {
       const text = this.extractMessageText(msg.element);
 
       if (text) {
         const messageId = this.generateMessageId(index, text);
-        const selector = msg.role === 'user' ? USER_MESSAGE_SELECTOR : ASSISTANT_MESSAGE_SELECTOR;
 
         messages.push({
           messageId,
           role: msg.role,
           text,
-          domSelector: selector
+          domSelector: msg.role === 'user' ? USER_MESSAGE_SELECTOR : ASSISTANT_MESSAGE_SELECTOR
         });
       }
     });
@@ -153,23 +194,11 @@ class ClaudeAdapter implements ChatAdapter {
 
     if (targetIndex === -1) return false;
 
-    const targetMessage = messages[targetIndex];
+    // Re-find elements to scroll to the correct one
+    const allElements = this.findMessageElements();
 
-    // Find the element by role selector and index
-    const selector = targetMessage.role === 'user' ? USER_MESSAGE_SELECTOR : ASSISTANT_MESSAGE_SELECTOR;
-    const elements = document.querySelectorAll(selector);
-
-    // Count how many of this role type come before this message
-    let roleCount = 0;
-    for (let i = 0; i < targetIndex; i++) {
-      if (messages[i].role === targetMessage.role) {
-        roleCount++;
-      }
-    }
-
-    const element = elements[roleCount] as HTMLElement;
-
-    if (element) {
+    if (targetIndex < allElements.length) {
+      const element = allElements[targetIndex].element;
       element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return true;
     }
@@ -196,7 +225,7 @@ class ClaudeAdapter implements ChatAdapter {
     // Listen for popstate (back/forward navigation)
     window.addEventListener('popstate', handleLocationChange);
 
-    // Also poll for changes (Claude may update URL via pushState)
+    // Also poll for changes (Gemini may update URL via pushState)
     const pollInterval = setInterval(handleLocationChange, 1000);
 
     // Return unsubscribe function
@@ -236,32 +265,23 @@ class ClaudeAdapter implements ChatAdapter {
 
   /**
    * Gets the conversation title
-   * Resolution order: document.title → conversation title element → first user message → timestamp
+   * Resolution order: document.title → first user message → timestamp
    */
   getConversationTitle(): TitleResult {
-    // 1. Try document.title (usually "ConvTitle - Claude")
+    // 1. Try document.title (usually "Title - Google" or "Gemini")
     const docTitle = document.title;
-    if (docTitle && !docTitle.startsWith('Claude')) {
-      const cleaned = docTitle.replace(/\s*[-–]\s*Claude\s*$/, '').trim();
-      if (cleaned && cleaned !== 'New chat' && cleaned !== 'Claude') {
+    if (docTitle && docTitle !== 'Gemini' && !docTitle.startsWith('Gemini')) {
+      const cleaned = docTitle.replace(/\s*[-–]\s*Google\s*$/, '').replace(/\s*[-–]\s*Gemini\s*$/, '').trim();
+      if (cleaned && cleaned !== 'Google' && cleaned !== 'Gemini') {
         return { value: this.normalizeTitle(cleaned), source: 'ui' };
       }
     }
 
-    // 2. Try conversation title element
-    const titleEl = document.querySelector('[data-testid="conversation-title"]');
-    if (titleEl?.textContent) {
-      const titleText = titleEl.textContent.trim();
-      if (titleText && titleText !== 'New chat') {
-        return { value: this.normalizeTitle(titleText), source: 'ui' };
-      }
-    }
-
-    // 3. Derived from first user message
+    // 2. Derived from first user message
     const derived = this.getDerivedTitle();
     if (derived) return derived;
 
-    // 4. Timestamp fallback
+    // 3. Timestamp fallback
     return this.getTimestampFallback();
   }
 
@@ -295,6 +315,6 @@ class ClaudeAdapter implements ChatAdapter {
 }
 
 /**
- * Singleton instance of the Claude adapter
+ * Singleton instance of the Gemini adapter
  */
-export const claudeAdapter: ChatAdapter = new ClaudeAdapter();
+export const geminiAdapter: ChatAdapter = new GeminiAdapter();

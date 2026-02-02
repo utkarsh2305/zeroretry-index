@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Outer swoosh circle -->
+  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="none" stroke="#7C3AED" stroke-width="2.5"/>
+
+  <!-- Inner circle ring -->
+  <circle cx="12" cy="12" r="5.5" fill="none" stroke="#7C3AED" stroke-width="1.5"/>
+
+  <!-- Play triangle -->
+  <path d="M10 8.5l5 3.5-5 3.5V8.5z" fill="#7C3AED"/>
+
+  <!-- Diagonal strike through -->
+  <line x1="4" y1="4" x2="20" y2="20" stroke="#7C3AED" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

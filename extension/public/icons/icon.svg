@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Background circle - transparent -->
+  <circle cx="64" cy="64" r="60" fill="#6B21A8" stroke="#7C3AED" stroke-width="4"/>
+
+  <!-- Inner play button symbol -->
+  <g transform="translate(64, 64)">
+    <!-- Outer ring -->
+    <circle cx="0" cy="0" r="32" fill="none" stroke="#ffffff" stroke-width="3"/>
+
+    <!-- Play triangle -->
+    <path d="M -8 -14 L 16 0 L -8 14 Z" fill="#ffffff"/>
+
+    <!-- Diagonal strike through -->
+    <line x1="-28" y1="-28" x2="28" y2="28" stroke="#7C3AED" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-28" y1="-28" x2="28" y2="28" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>

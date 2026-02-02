@@ -1,0 +1,16 @@
+{
+  "name": "zeroretry-index",
+  "version": "1.0.0",
+  "description": "Index and search ChatGPT conversations",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode development",
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.36",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.11",
+    "vite-plugin-static-copy": "^3.2.0"
+  }
+}

@@ -1,0 +1,1396 @@
+/**
+ * ZeroRetry Index - Content Script
+ * Injects a sidebar into chat platforms for indexing conversations
+ */
+
+import { getAdapterForUrl } from './adapters';
+import type { ChatMessage, TitleResult, ChatPlatformId } from './adapters';
+import type { ResolvedSavedItem, SavedItem } from './core/savedItem';
+import {
+  createSavedItem,
+  resolveSavedItems,
+  groupSavedItemsByPlatform,
+  getConversationUrl,
+  PLATFORM_INFO
+} from './core/savedItem';
+import {
+  getSavedItemsForConversation,
+  addSavedItem,
+  removeSavedItem,
+  removeSavedItemByMessageId,
+  loadAllSavedItems
+} from './core/storage';
+import { renderSavedItem } from './ui/savedItemComponent';
+
+const SIDEBAR_ID = 'zeroretry-index-sidebar';
+const SIDEBAR_BODY_ID = 'zeroretry-sidebar-body';
+const SIDEBAR_LOADING_ID = 'zeroretry-loading';
+const SIDEBAR_EMPTY_ID = 'zeroretry-empty';
+const SIDEBAR_TOC_ID = 'zeroretry-toc';
+const SIDEBAR_TITLE_ID = 'zeroretry-title';
+const SIDEBAR_TOC_TAB_ID = 'zeroretry-toc-tab';
+const SIDEBAR_SAVED_TAB_ID = 'zeroretry-saved-tab';
+const SIDEBAR_SAVED_PANEL_ID = 'zeroretry-saved-panel';
+
+// Debug flag - set to true to enable logging
+const DEBUG = false;
+
+// Global UI state: 'expanded' | 'collapsed' | 'minimized'
+type UIState = 'expanded' | 'collapsed' | 'minimized';
+let uiState: UIState = 'expanded';
+
+// Tab state: 'index' | 'saved'
+type SidebarTab = 'index' | 'saved';
+let activeTab: SidebarTab = 'index';
+
+/**
+ * Conditional logging based on DEBUG flag
+ */
+function log(...args: any[]): void {
+  if (DEBUG) {
+    console.log('[ZeroRetry Index]', ...args);
+  }
+}
+
+/**
+ * Session lifecycle management for handling conversation switching
+ */
+
+interface Session {
+  version: number;
+  conversationId: string | null;
+  conversationKey: string | null;
+  platformId: string | null;
+  bootObserver: MutationObserver | null;
+  bootRetryTimeout: ReturnType<typeof setTimeout> | null;
+  bootDebounceTimer: ReturnType<typeof setTimeout> | null;
+  liveObserver: MutationObserver | null;
+  liveDebounceTimer: ReturnType<typeof setTimeout> | null;
+  lastSignature: string;
+  isComplete: boolean;
+  // Title state
+  currentTitle: TitleResult | null;
+  titleLocked: boolean;
+  titleUnsubscribe: (() => void) | null;
+  // Saved items state
+  savedItems: ResolvedSavedItem[];
+  allSavedItems: SavedItem[];
+  savedMessageIds: Set<string>;
+}
+
+// Global session state
+let currentSessionVersion = 0;
+let currentSession: Session | null = null;
+
+/**
+ * Creates a new session object
+ */
+function createSession(
+  conversationId: string | null,
+  version: number,
+  platformId: string | null
+): Session {
+  const conversationKey = platformId && conversationId
+    ? `${platformId}:${conversationId}`
+    : null;
+
+  return {
+    version,
+    conversationId,
+    conversationKey,
+    platformId,
+    bootObserver: null,
+    bootRetryTimeout: null,
+    bootDebounceTimer: null,
+    liveObserver: null,
+    liveDebounceTimer: null,
+    lastSignature: '',
+    isComplete: false,
+    currentTitle: null,
+    titleLocked: false,
+    titleUnsubscribe: null,
+    savedItems: [],
+    allSavedItems: [],
+    savedMessageIds: new Set()
+  };
+}
+
+/**
+ * Idempotent session teardown
+ */
+function teardownSession(session: Session): void {
+  if (!session) return;
+
+  if (session.bootObserver) {
+    session.bootObserver.disconnect();
+    session.bootObserver = null;
+  }
+  if (session.bootRetryTimeout) {
+    clearTimeout(session.bootRetryTimeout);
+    session.bootRetryTimeout = null;
+  }
+  if (session.bootDebounceTimer) {
+    clearTimeout(session.bootDebounceTimer);
+    session.bootDebounceTimer = null;
+  }
+  if (session.liveObserver) {
+    session.liveObserver.disconnect();
+    session.liveObserver = null;
+  }
+  if (session.liveDebounceTimer) {
+    clearTimeout(session.liveDebounceTimer);
+    session.liveDebounceTimer = null;
+  }
+  if (session.titleUnsubscribe) {
+    session.titleUnsubscribe();
+    session.titleUnsubscribe = null;
+  }
+
+  session.isComplete = false;
+  log('Session', session.version, 'torn down');
+}
+
+/**
+ * Checks if a session is still current
+ */
+function isSessionCurrent(session: Session): boolean {
+  return session && session.version === currentSessionVersion;
+}
+
+/**
+ * Resets sidebar UI to loading state
+ */
+function resetUIToLoading(): void {
+  const loading = document.getElementById(SIDEBAR_LOADING_ID);
+  const empty = document.getElementById(SIDEBAR_EMPTY_ID);
+  const toc = document.getElementById(SIDEBAR_TOC_ID);
+
+  if (loading) {
+    loading.textContent = 'Loading messages… (scroll if needed)';
+    loading.style.display = 'block';
+  }
+  if (empty) empty.style.display = 'none';
+  if (toc) toc.style.display = 'none';
+}
+function buildTOCLabel(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length > 80 ? normalized.substring(0, 80) + '...' : normalized;
+}
+
+/**
+ * Filters and deduplicates messages to user messages only
+ */
+function getUserMessages(messages: ChatMessage[]): ChatMessage[] {
+  const seen = new Set<string>();
+  return messages.filter((msg) => {
+    if (msg.role !== 'user' || !msg.text.trim()) {
+      return false;
+    }
+    if (seen.has(msg.messageId)) {
+      return false;
+    }
+    seen.add(msg.messageId);
+    return true;
+  });
+}
+
+/**
+ * Renders or updates the TOC in the sidebar
+ * Returns a signature for change detection: comma-separated messageIds
+ */
+function refreshTOC(
+  adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>,
+  isLoading: boolean,
+  isObserverActive: boolean = false,
+  session?: Session
+): string {
+  const body = document.getElementById(SIDEBAR_BODY_ID);
+  if (!body) return '';
+
+  const messages = adapter.getMessages();
+  const userMessages = getUserMessages(messages);
+  const currentSignature = userMessages.map((m) => m.messageId).join(',');
+
+  // Hide all states initially
+  const loading = document.getElementById(SIDEBAR_LOADING_ID);
+  const empty = document.getElementById(SIDEBAR_EMPTY_ID);
+  const toc = document.getElementById(SIDEBAR_TOC_ID);
+
+  if (loading) loading.style.display = 'none';
+  if (empty) empty.style.display = 'none';
+  if (toc) toc.style.display = 'none';
+
+  if (isLoading && userMessages.length === 0) {
+    // Still loading, show loading state (only if on index tab)
+    if (loading && activeTab === 'index') loading.style.display = 'block';
+  } else if (userMessages.length === 0) {
+    // No user messages found
+    if (empty && activeTab === 'index') {
+      // Show scroll prompt if observer is still active, otherwise show "no messages"
+      if (isObserverActive) {
+        empty.textContent = 'Please scroll to load messages…';
+      } else {
+        empty.textContent = 'No messages found';
+      }
+      empty.style.display = 'block';
+    }
+  } else {
+    // Show TOC list - only rebuild if signature changed (only if on index tab)
+    if (toc) {
+      if (activeTab === 'index') toc.style.display = 'block';
+      // Clear existing list
+      toc.innerHTML = '';
+
+      // Build list items
+      userMessages.forEach((msg, index) => {
+        const item = document.createElement('div');
+        item.className = 'zeroretry-toc-item';
+        item.style.display = 'flex';
+        item.style.alignItems = 'center';
+        item.style.gap = '8px';
+        item.style.cursor = 'pointer';
+        item.style.padding = '10px 12px';
+        item.style.borderBottom = '1px solid #f0f0f0';
+        item.style.transition = 'background-color 0.2s';
+
+        // Text label
+        const label = document.createElement('span');
+        label.className = 'zeroretry-toc-label';
+        label.textContent = buildTOCLabel(msg.text);
+        label.title = msg.text;
+        label.style.flex = '1';
+        label.style.fontSize = '14px';
+        label.style.color = '#374151';
+        label.style.overflow = 'hidden';
+        label.style.textOverflow = 'ellipsis';
+        label.style.whiteSpace = 'nowrap';
+
+        // Bookmark button
+        const isBookmarked = session?.savedMessageIds.has(msg.messageId) ?? false;
+        const bookmarkBtn = document.createElement('button');
+        bookmarkBtn.className = 'zeroretry-bookmark-btn';
+        bookmarkBtn.innerHTML = isBookmarked ? '★' : '☆';
+        bookmarkBtn.title = isBookmarked ? 'Remove bookmark' : 'Add bookmark';
+        Object.assign(bookmarkBtn.style, {
+          background: 'none',
+          border: 'none',
+          cursor: 'pointer',
+          fontSize: '14px',
+          color: isBookmarked ? '#f59e0b' : '#9ca3af',
+          padding: '0 4px',
+          flexShrink: '0',
+          transition: 'color 0.2s'
+        });
+
+        // Bookmark click handler
+        bookmarkBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (session) {
+            toggleSave(msg, index, session, bookmarkBtn);
+          }
+        });
+
+        // Hover effect for bookmark button
+        bookmarkBtn.addEventListener('mouseenter', () => {
+          if (!session?.savedMessageIds.has(msg.messageId)) {
+            bookmarkBtn.style.color = '#d97706';
+          }
+        });
+        bookmarkBtn.addEventListener('mouseleave', () => {
+          const stillBookmarked = session?.savedMessageIds.has(msg.messageId) ?? false;
+          bookmarkBtn.style.color = stillBookmarked ? '#f59e0b' : '#9ca3af';
+        });
+
+        item.appendChild(label);
+        item.appendChild(bookmarkBtn);
+
+        // Hover effect for item
+        item.addEventListener('mouseenter', () => {
+          item.style.backgroundColor = '#f3f4f6';
+        });
+        item.addEventListener('mouseleave', () => {
+          item.style.backgroundColor = 'transparent';
+        });
+
+        // Click handler: scroll to message (on label or item, not bookmark button)
+        label.addEventListener('click', () => {
+          const success = adapter.scrollToMessage(msg.messageId);
+          if (success) {
+            // Visual confirmation: briefly highlight
+            item.style.backgroundColor = '#fef3c7';
+            setTimeout(() => {
+              item.style.backgroundColor = 'transparent';
+            }, 800);
+          }
+        });
+
+        toc.appendChild(item);
+      });
+    }
+  }
+
+  return currentSignature;
+}
+
+/**
+ * Creates and injects the sidebar container into the page
+ */
+function injectSidebar(): void {
+  // Check if sidebar already exists to prevent duplicates
+  if (document.getElementById(SIDEBAR_ID)) {
+    log('Sidebar already exists, skipping injection');
+    return;
+  }
+
+  // Create the sidebar container (drawer)
+  const sidebar = document.createElement('div');
+  sidebar.id = SIDEBAR_ID;
+
+  // Create collapsed strip (slim vertical bar when collapsed)
+  const collapsedStrip = document.createElement('div');
+  collapsedStrip.id = 'zeroretry-collapsed-strip';
+  collapsedStrip.className = 'zeroretry-collapsed-strip';
+  collapsedStrip.title = 'Expand ZR Index';
+  collapsedStrip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setUIState('expanded');
+  });
+
+  // Add logo to collapsed strip (using img with chrome.runtime.getURL)
+  const stripLogo = document.createElement('div');
+  stripLogo.className = 'zeroretry-strip-logo';
+  const stripIcon = document.createElement('img');
+  stripIcon.src = chrome.runtime.getURL('public/icons/header-icon.svg');
+  stripIcon.alt = 'ZR';
+  Object.assign(stripIcon.style, {
+    width: '24px',
+    height: '24px'
+  });
+  stripLogo.appendChild(stripIcon);
+
+  // Add expand indicator to collapsed strip
+  const expandIndicator = document.createElement('div');
+  expandIndicator.className = 'zeroretry-expand-indicator';
+  expandIndicator.innerHTML = '«';
+
+  // Add close button to collapsed strip
+  const stripCloseBtn = document.createElement('button');
+  stripCloseBtn.className = 'zeroretry-strip-close';
+  stripCloseBtn.innerHTML = '×';
+  stripCloseBtn.title = 'Minimize';
+  stripCloseBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setUIState('minimized');
+  });
+
+  collapsedStrip.appendChild(stripLogo);
+  collapsedStrip.appendChild(expandIndicator);
+  collapsedStrip.appendChild(stripCloseBtn);
+  sidebar.appendChild(collapsedStrip);
+
+  // Create expanded panel
+  const expandedPanel = document.createElement('div');
+  expandedPanel.id = 'zeroretry-panel';
+  expandedPanel.className = 'zeroretry-panel';
+  
+  // Create header
+  const header = document.createElement('div');
+  header.className = 'zeroretry-header';
+  
+  const headerLogo = document.createElement('div');
+  headerLogo.className = 'zeroretry-header-logo';
+  Object.assign(headerLogo.style, {
+    display: 'flex',
+    alignItems: 'center',
+    flexShrink: '0'
+  });
+
+  // Icon only - clean and non-intrusive
+  const iconImg = document.createElement('img');
+  iconImg.src = chrome.runtime.getURL('public/icons/header-icon.svg');
+  iconImg.alt = 'ZR Index';
+  iconImg.title = 'ZR Index';
+  Object.assign(iconImg.style, {
+    width: '20px',
+    height: '20px'
+  });
+
+  headerLogo.appendChild(iconImg);
+  
+  const title = document.createElement('h3');
+  title.id = SIDEBAR_TITLE_ID;
+  title.textContent = 'Loading...';
+  title.className = 'zeroretry-title';
+  title.title = 'Click to edit title';
+  
+  // Create collapse button for header (collapses to strip)
+  const collapseButton = document.createElement('button');
+  collapseButton.id = 'zeroretry-collapse-btn';
+  collapseButton.className = 'zeroretry-collapse-btn';
+  collapseButton.innerHTML = '»';
+  collapseButton.title = 'Collapse panel';
+  collapseButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setUIState('collapsed');
+  });
+
+  // Create close button for header (minimizes to icon)
+  const closeButton = document.createElement('button');
+  closeButton.id = 'zeroretry-close-btn';
+  closeButton.className = 'zeroretry-close-btn';
+  closeButton.innerHTML = '×';
+  closeButton.title = 'Minimize';
+  closeButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setUIState('minimized');
+  });
+
+  // Create header left group (logo + title)
+  const headerLeft = document.createElement('div');
+  headerLeft.className = 'zeroretry-header-left';
+  headerLeft.appendChild(headerLogo);
+  headerLeft.appendChild(title);
+
+  // Create header right group (collapse + close)
+  const headerRight = document.createElement('div');
+  headerRight.className = 'zeroretry-header-right';
+  headerRight.appendChild(collapseButton);
+  headerRight.appendChild(closeButton);
+
+  header.appendChild(headerLeft);
+  header.appendChild(headerRight);
+  
+  expandedPanel.appendChild(header);
+  
+  // Create body container
+  const body = document.createElement('div');
+  body.id = SIDEBAR_BODY_ID;
+
+  // Create tab bar
+  const tabBar = document.createElement('div');
+  tabBar.className = 'zeroretry-tabs';
+  Object.assign(tabBar.style, {
+    display: 'flex',
+    borderBottom: '1px solid #e5e7eb',
+    backgroundColor: '#f9fafb',
+    flexShrink: '0'
+  });
+
+  // Index tab
+  const tocTab = document.createElement('button');
+  tocTab.id = SIDEBAR_TOC_TAB_ID;
+  tocTab.textContent = 'Index';
+  tocTab.className = 'zeroretry-tab active';
+  styleTab(tocTab, true);
+  tocTab.addEventListener('click', () => switchTab('index'));
+
+  // Bookmarks tab
+  const bookmarksTab = document.createElement('button');
+  bookmarksTab.id = SIDEBAR_SAVED_TAB_ID;
+  bookmarksTab.textContent = '★ Saved';
+  bookmarksTab.className = 'zeroretry-tab';
+  styleTab(bookmarksTab, false);
+  bookmarksTab.addEventListener('click', () => switchTab('saved'));
+
+  tabBar.appendChild(tocTab);
+  tabBar.appendChild(bookmarksTab);
+  body.appendChild(tabBar);
+
+  // Loading state
+  const loading = document.createElement('div');
+  loading.id = SIDEBAR_LOADING_ID;
+  loading.textContent = 'Loading messages… (scroll if needed)';
+  loading.style.padding = '16px';
+  loading.style.color = '#9ca3af';
+  loading.style.fontSize = '14px';
+  loading.style.textAlign = 'center';
+  loading.style.display = 'block';
+  body.appendChild(loading);
+  
+  // Empty state
+  const empty = document.createElement('div');
+  empty.id = SIDEBAR_EMPTY_ID;
+  empty.textContent = 'No messages found';
+  empty.style.padding = '16px';
+  empty.style.color = '#9ca3af';
+  empty.style.fontSize = '14px';
+  empty.style.textAlign = 'center';
+  empty.style.display = 'none';
+  body.appendChild(empty);
+  
+  // TOC list
+  const toc = document.createElement('div');
+  toc.id = SIDEBAR_TOC_ID;
+  toc.style.display = 'none';
+  toc.style.flex = '1';
+  toc.style.overflowY = 'auto';
+  body.appendChild(toc);
+
+  // Bookmarks panel (hidden by default)
+  const bookmarksPanel = document.createElement('div');
+  bookmarksPanel.id = SIDEBAR_SAVED_PANEL_ID;
+  Object.assign(bookmarksPanel.style, {
+    display: 'none',
+    flex: '1',
+    overflowY: 'auto'
+  });
+  body.appendChild(bookmarksPanel);
+
+  expandedPanel.appendChild(body);
+  
+  sidebar.appendChild(expandedPanel);
+
+  // Create minimized icon (shown when UI is minimized)
+  const minimizedIcon = document.createElement('div');
+  minimizedIcon.id = 'zeroretry-minimized-icon';
+  minimizedIcon.className = 'zeroretry-minimized-icon';
+  minimizedIcon.title = 'Open ZR Index';
+  const minIcon = document.createElement('img');
+  minIcon.src = chrome.runtime.getURL('public/icons/header-icon.svg');
+  minIcon.alt = 'ZR';
+  Object.assign(minIcon.style, {
+    width: '20px',
+    height: '20px'
+  });
+  minimizedIcon.appendChild(minIcon);
+  minimizedIcon.addEventListener('click', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setUIState('expanded');
+  });
+
+  // Style minimized icon
+  Object.assign(minimizedIcon.style, {
+    position: 'fixed',
+    bottom: '20px',
+    right: '20px',
+    width: '40px',
+    height: '40px',
+    borderRadius: '20px',
+    backgroundColor: 'rgba(107, 114, 128, 0.15)',
+    border: '1px solid rgba(107, 114, 128, 0.3)',
+    display: uiState === 'minimized' ? 'flex' : 'none',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    zIndex: '9998',
+    backdropFilter: 'blur(4px)'
+  });
+
+  // Hover effect for minimized icon
+  minimizedIcon.addEventListener('mouseenter', () => {
+    minimizedIcon.style.backgroundColor = 'rgba(31, 41, 55, 0.9)';
+    minimizedIcon.style.borderColor = '#10b981';
+    minimizedIcon.style.transform = 'scale(1.1)';
+  });
+  minimizedIcon.addEventListener('mouseleave', () => {
+    minimizedIcon.style.backgroundColor = 'rgba(107, 114, 128, 0.15)';
+    minimizedIcon.style.borderColor = 'rgba(107, 114, 128, 0.3)';
+    minimizedIcon.style.transform = 'scale(1)';
+  });
+
+  // Apply styles
+  applySidebarStyles(sidebar, collapsedStrip, expandedPanel, header, title, collapseButton, closeButton, body);
+
+  // Inject into page
+  document.body.appendChild(sidebar);
+  document.body.appendChild(minimizedIcon);
+
+  log('Sidebar injected successfully');
+
+  // Log initial UI state
+  console.log('[ZeroRetry Index] UI state:', uiState);
+}
+
+/**
+ * Applies inline styles to the sidebar and its elements
+ */
+function applySidebarStyles(
+  sidebar: HTMLElement,
+  collapsedStrip: HTMLElement,
+  expandedPanel: HTMLElement,
+  header: HTMLElement,
+  title: HTMLElement,
+  collapseButton: HTMLElement,
+  closeButton: HTMLElement,
+  body: HTMLElement
+): void {
+  // Main sidebar container (drawer wrapper)
+  Object.assign(sidebar.style, {
+    position: 'fixed',
+    top: '80px',
+    right: '20px',
+    height: 'calc(100vh - 100px)',
+    zIndex: '9999',
+    display: 'flex',
+    flexDirection: 'row',
+    gap: '0',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    pointerEvents: 'none'
+  });
+
+  // Collapsed strip (slim vertical bar - styled as subtle "handle")
+  Object.assign(collapsedStrip.style, {
+    pointerEvents: 'auto',
+    display: uiState === 'collapsed' ? 'flex' : 'none',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center', // Vertically center logo + chevron
+    width: '48px',
+    height: '100%',
+    backgroundColor: 'rgba(31, 41, 55, 0.85)', // Semi-transparent
+    border: '1px solid rgba(55, 65, 81, 0.5)', // Softer border
+    borderRadius: '8px',
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+    backdropFilter: 'blur(8px)', // Subtle glass effect
+    padding: '12px 0',
+    gap: '12px',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease'
+  });
+
+  // Strip logo styles
+  const stripLogo = collapsedStrip.querySelector('.zeroretry-strip-logo') as HTMLElement;
+  if (stripLogo) {
+    Object.assign(stripLogo.style, {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: '32px',
+      height: '32px'
+    });
+  }
+
+  // Expand indicator styles
+  const expandIndicator = collapsedStrip.querySelector('.zeroretry-expand-indicator') as HTMLElement;
+  if (expandIndicator) {
+    Object.assign(expandIndicator.style, {
+      fontSize: '18px',
+      color: '#10b981',
+      fontWeight: 'bold'
+    });
+  }
+
+  // Strip close button styles
+  const stripCloseBtn = collapsedStrip.querySelector('.zeroretry-strip-close') as HTMLElement;
+  if (stripCloseBtn) {
+    Object.assign(stripCloseBtn.style, {
+      padding: '4px 8px',
+      fontSize: '14px',
+      fontWeight: 'bold',
+      color: '#9ca3af',
+      backgroundColor: 'transparent',
+      border: '1px solid rgba(156, 163, 175, 0.5)',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      transition: 'all 0.2s'
+    });
+    stripCloseBtn.addEventListener('mouseenter', () => {
+      stripCloseBtn.style.backgroundColor = 'rgba(254, 226, 226, 0.9)';
+      stripCloseBtn.style.borderColor = '#fca5a5';
+      stripCloseBtn.style.color = '#dc2626';
+    });
+    stripCloseBtn.addEventListener('mouseleave', () => {
+      stripCloseBtn.style.backgroundColor = 'transparent';
+      stripCloseBtn.style.borderColor = 'rgba(156, 163, 175, 0.5)';
+      stripCloseBtn.style.color = '#9ca3af';
+    });
+  }
+
+  // Hover effect for collapsed strip
+  collapsedStrip.addEventListener('mouseenter', () => {
+    collapsedStrip.style.backgroundColor = 'rgba(55, 65, 81, 0.9)';
+  });
+  collapsedStrip.addEventListener('mouseleave', () => {
+    collapsedStrip.style.backgroundColor = 'rgba(31, 41, 55, 0.85)';
+  });
+
+  // Expanded panel (drawer)
+  Object.assign(expandedPanel.style, {
+    pointerEvents: 'auto',
+    display: uiState === 'expanded' ? 'flex' : 'none',
+    flexDirection: 'column',
+    width: '320px',
+    height: '100%',
+    backgroundColor: '#ffffff',
+    border: '1px solid #d1d5db',
+    borderRadius: '8px',
+    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+    overflow: 'hidden',
+    transition: 'all 0.3s ease'
+  });
+
+  // Header styles
+  Object.assign(header.style, {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '8px',
+    padding: '12px 16px', // Reduced padding
+    borderBottom: '1px solid #e5e7eb',
+    backgroundColor: '#f9fafb',
+    flexShrink: '0'
+  });
+
+  // Header left group (logo + title)
+  const headerLeft = header.querySelector('.zeroretry-header-left') as HTMLElement;
+  if (headerLeft) {
+    Object.assign(headerLeft.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      flex: '1',
+      minWidth: '0'
+    });
+  }
+
+  // Header right group (collapse + pause)
+  const headerRight = header.querySelector('.zeroretry-header-right') as HTMLElement;
+  if (headerRight) {
+    Object.assign(headerRight.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px',
+      flexShrink: '0'
+    });
+  }
+
+  const headerLogo = header.querySelector('.zeroretry-header-logo') as HTMLElement;
+  if (headerLogo) {
+    Object.assign(headerLogo.style, {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: '20px',
+      height: '20px',
+      flexShrink: '0'
+    });
+  }
+
+  // Title styles
+  Object.assign(title.style, {
+    margin: '0',
+    fontSize: '16px',
+    fontWeight: '600',
+    color: '#111827',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    cursor: 'pointer'
+  });
+
+  // Collapse button styles (in header)
+  Object.assign(collapseButton.style, {
+    padding: '6px 10px',
+    fontSize: '14px',
+    fontWeight: 'bold',
+    color: '#ffffff',
+    backgroundColor: '#1f2937',
+    border: '1px solid #374151',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    flexShrink: '0'
+  });
+
+  // Add hover effect to collapse button
+  collapseButton.addEventListener('mouseenter', () => {
+    collapseButton.style.backgroundColor = '#374151';
+  });
+
+  collapseButton.addEventListener('mouseleave', () => {
+    collapseButton.style.backgroundColor = '#1f2937';
+  });
+
+  // Close button styles (minimize to icon)
+  Object.assign(closeButton.style, {
+    padding: '6px 10px',
+    fontSize: '16px',
+    fontWeight: 'bold',
+    color: '#6b7280',
+    backgroundColor: 'transparent',
+    border: '1px solid #d1d5db',
+    borderRadius: '6px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    flexShrink: '0'
+  });
+
+  // Add hover effect to close button
+  closeButton.addEventListener('mouseenter', () => {
+    closeButton.style.backgroundColor = '#fee2e2';
+    closeButton.style.borderColor = '#fca5a5';
+    closeButton.style.color = '#dc2626';
+  });
+
+  closeButton.addEventListener('mouseleave', () => {
+    closeButton.style.backgroundColor = 'transparent';
+    closeButton.style.borderColor = '#d1d5db';
+    closeButton.style.color = '#6b7280';
+  });
+
+  // Body styles
+  Object.assign(body.style, {
+    flex: '1',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden'
+  });
+}
+
+/**
+ * Sets the UI state (expanded, collapsed, or minimized)
+ */
+function setUIState(newState: UIState): void {
+  uiState = newState;
+
+  const panel = document.getElementById('zeroretry-panel') as HTMLElement;
+  const strip = document.getElementById('zeroretry-collapsed-strip') as HTMLElement;
+  const icon = document.getElementById('zeroretry-minimized-icon') as HTMLElement;
+
+  // Always log state changes
+  console.log('[ZeroRetry Index] UI state:', uiState);
+
+  if (panel) {
+    panel.style.display = newState === 'expanded' ? 'flex' : 'none';
+  }
+
+  if (strip) {
+    strip.style.display = newState === 'collapsed' ? 'flex' : 'none';
+  }
+
+  if (icon) {
+    icon.style.display = newState === 'minimized' ? 'flex' : 'none';
+  }
+}
+
+/**
+ * Updates the sidebar title from the adapter
+ */
+function updateTitle(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, session: Session): void {
+  if (!isSessionCurrent(session)) return;
+  if (session.titleLocked) return;
+
+  const titleResult = adapter.getConversationTitle();
+  const titleEl = document.getElementById(SIDEBAR_TITLE_ID);
+
+  if (titleEl && titleResult.value !== session.currentTitle?.value) {
+    titleEl.textContent = titleResult.value;
+    titleEl.dataset.source = titleResult.source;
+    session.currentTitle = titleResult;
+    log('Title updated:', titleResult.value, `(${titleResult.source})`);
+  }
+}
+
+/**
+ * Resolves and caches bookmarks for the current session
+ */
+async function resolveAndCacheBookmarks(
+  adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>,
+  session: Session
+): Promise<void> {
+  if (!isSessionCurrent(session)) return;
+
+  // Always load all saved items for global view
+  session.allSavedItems = await loadAllSavedItems();
+  log('All saved items loaded:', session.allSavedItems.length);
+
+  // Load current conversation items only if we have a conversationKey
+  if (session.conversationKey) {
+    const messages = adapter.getMessages();
+    const rawSavedItems = await getSavedItemsForConversation(session.conversationKey);
+
+    session.savedItems = resolveSavedItems(rawSavedItems, messages);
+    session.savedMessageIds = new Set(
+      session.savedItems
+        .filter((item: ResolvedSavedItem) => item.status === 'active')
+        .map((item: ResolvedSavedItem) => item.anchor.messageId)
+    );
+
+    log('Saved items resolved:', session.savedItems.length, 'total,', session.savedMessageIds.size, 'active');
+  }
+}
+
+/**
+ * Toggles save for a message
+ */
+async function toggleSave(
+  msg: ChatMessage,
+  msgIndex: number,
+  session: Session,
+  saveBtn: HTMLElement
+): Promise<void> {
+  if (!session.conversationKey || !session.platformId) return;
+
+  const isSaved = session.savedMessageIds.has(msg.messageId);
+
+  if (isSaved) {
+    // Remove saved item
+    const removed = await removeSavedItemByMessageId(session.conversationKey, msg.messageId);
+    if (removed) {
+      session.savedMessageIds.delete(msg.messageId);
+      session.savedItems = session.savedItems.filter((item: ResolvedSavedItem) => item.anchor.messageId !== msg.messageId);
+      saveBtn.innerHTML = '☆';
+      saveBtn.style.color = '#9ca3af';
+      saveBtn.title = 'Save';
+      log('Saved item removed for message:', msg.messageId);
+    }
+  } else {
+    // Add saved item
+    const savedItem = createSavedItem(msg, msgIndex, session.conversationKey, session.platformId as ChatPlatformId);
+    await addSavedItem(savedItem);
+    session.savedMessageIds.add(msg.messageId);
+    session.savedItems.push({ ...savedItem, status: 'active', resolvedMessageId: msg.messageId });
+    saveBtn.innerHTML = '★';
+    saveBtn.style.color = '#f59e0b';
+    saveBtn.title = 'Remove';
+    log('Saved item added for message:', msg.messageId);
+  }
+}
+
+/**
+ * Styles a tab button based on active state
+ */
+function styleTab(tab: HTMLElement, isActive: boolean): void {
+  Object.assign(tab.style, {
+    flex: '1',
+    padding: '10px 12px',
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    fontSize: '13px',
+    fontWeight: isActive ? '600' : '400',
+    color: isActive ? '#111827' : '#6b7280',
+    borderBottom: isActive ? '2px solid #10b981' : '2px solid transparent',
+    transition: 'all 0.2s'
+  });
+}
+
+/**
+ * Switches between Index and Saved tabs
+ */
+function switchTab(tab: SidebarTab): void {
+  activeTab = tab;
+
+  const tocTab = document.getElementById(SIDEBAR_TOC_TAB_ID);
+  const savedTab = document.getElementById(SIDEBAR_SAVED_TAB_ID);
+  const toc = document.getElementById(SIDEBAR_TOC_ID);
+  const savedPanel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
+  const loading = document.getElementById(SIDEBAR_LOADING_ID);
+  const empty = document.getElementById(SIDEBAR_EMPTY_ID);
+
+  if (tab === 'index') {
+    if (tocTab) styleTab(tocTab, true);
+    if (savedTab) styleTab(savedTab, false);
+    if (toc) toc.style.display = 'block';
+    if (savedPanel) savedPanel.style.display = 'none';
+    // Show loading/empty if applicable (handled by refreshTOC)
+  } else {
+    if (tocTab) styleTab(tocTab, false);
+    if (savedTab) styleTab(savedTab, true);
+    if (toc) toc.style.display = 'none';
+    if (savedPanel) savedPanel.style.display = 'block';
+    if (loading) loading.style.display = 'none';
+    if (empty) empty.style.display = 'none';
+    // Render saved panel
+    if (currentSession) {
+      renderSavedPanel(currentSession);
+    }
+  }
+}
+
+/**
+ * Renders the saved panel content - always shows all saved items grouped by platform
+ */
+function renderSavedPanel(session: Session): void {
+  const panel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
+  if (!panel) return;
+
+  panel.innerHTML = '';
+
+  // Always show all saved items (no dropdown toggle)
+  renderAllSavedItemsView(panel, session);
+}
+
+/**
+ * Renders all saved items grouped by platform with expand/collapse functionality
+ */
+function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
+  const allItems = session.allSavedItems;
+
+  if (allItems.length === 0) {
+    const emptyMsg = document.createElement('div');
+    emptyMsg.className = 'zeroretry-saved-empty';
+    emptyMsg.textContent = 'No saved items yet';
+    Object.assign(emptyMsg.style, {
+      padding: '24px 16px',
+      textAlign: 'center',
+      color: '#9ca3af',
+      fontSize: '14px'
+    });
+    panel.appendChild(emptyMsg);
+    return;
+  }
+
+  const grouped = groupSavedItemsByPlatform(allItems);
+
+  // Get adapter for scrollToMessage (only works for current conversation)
+  const url = new URL(window.location.href);
+  const adapter = getAdapterForUrl(url);
+
+  grouped.forEach(platformGroup => {
+    // Platform header
+    const platformHeader = document.createElement('div');
+    platformHeader.className = 'zeroretry-platform-header';
+    const itemCount = platformGroup.conversations.reduce((sum, c) => sum + c.items.length, 0);
+    platformHeader.textContent = `${platformGroup.platformName} (${itemCount})`;
+    Object.assign(platformHeader.style, {
+      padding: '10px 12px',
+      fontSize: '13px',
+      fontWeight: '600',
+      color: '#374151',
+      backgroundColor: '#f3f4f6',
+      borderBottom: '1px solid #e5e7eb'
+    });
+    panel.appendChild(platformHeader);
+
+    // Items under this platform - use renderSavedItem for expand/collapse with continuation editor
+    platformGroup.conversations.forEach(conv => {
+      conv.items.forEach(item => {
+        // Convert SavedItem to ResolvedSavedItem for the component
+        // For items not in current conversation, mark as 'orphaned' (can't scroll to them)
+        const isCurrentConversation = item.conversationKey === session.conversationKey;
+        const resolvedItem: ResolvedSavedItem = {
+          ...item,
+          status: isCurrentConversation ? 'active' : 'orphaned',
+          resolvedMessageId: isCurrentConversation ? item.anchor.messageId : null
+        };
+
+        const itemElement = renderSavedItem(resolvedItem, platformGroup.platform, {
+          onDelete: async (id: string) => {
+            await removeSavedItem(id);
+            // Refresh the saved items list
+            session.allSavedItems = await loadAllSavedItems();
+            renderSavedPanel(session);
+          },
+          onUpdate: async () => {
+            // Refresh all items after update
+            session.allSavedItems = await loadAllSavedItems();
+            renderSavedPanel(session);
+          },
+          scrollToMessage: (messageId: string) => {
+            // Only works if item is in current conversation
+            if (isCurrentConversation && adapter) {
+              return adapter.scrollToMessage(messageId);
+            }
+            // For items in other conversations, open that conversation
+            const convUrl = getConversationUrl(item.sourcePlatform, item.conversationKey);
+            window.open(convUrl, '_blank');
+            return false;
+          }
+        });
+
+        panel.appendChild(itemElement);
+      });
+    });
+  });
+}
+
+/**
+ * Sets up click-to-edit functionality for the title
+ */
+function setupTitleEdit(session: Session): void {
+  const titleEl = document.getElementById(SIDEBAR_TITLE_ID);
+  if (!titleEl) return;
+
+  titleEl.addEventListener('click', () => {
+    const current = titleEl.textContent || '';
+    const newTitle = prompt('Edit conversation title:', current);
+
+    if (newTitle !== null && newTitle.trim() !== current) {
+      const finalTitle = newTitle.trim() || current;
+      titleEl.textContent = finalTitle;
+      session.titleLocked = true;
+      session.currentTitle = { value: finalTitle, source: 'ui' };
+      log('Title manually set:', finalTitle);
+    }
+  });
+}
+
+/**
+ * Initialize the extension
+ */
+function init(): void {
+  // Get the current page URL and find matching adapter
+  const url = new URL(window.location.href);
+  const adapter = getAdapterForUrl(url);
+
+  // Exit if no adapter matches this URL
+  if (!adapter) {
+    log('No matching adapter for URL:', url.hostname);
+    return;
+  }
+
+  // Log which adapter is being used
+  log('Using adapter:', adapter.id);
+
+  // Wait for DOM to be ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      injectSidebar();
+      setupConversationWatcher(adapter);
+    });
+  } else {
+    injectSidebar();
+    setupConversationWatcher(adapter);
+  }
+}
+
+/**
+ * Sets up conversation change listener and starts initial session
+ */
+function setupConversationWatcher(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>): void {
+  // Start initial session
+  startNewSession(adapter);
+
+  // Watch for conversation changes
+  adapter.onConversationChange(() => {
+    log('Conversation changed');
+    startNewSession(adapter);
+  });
+}
+
+/**
+ * Starts a new session for the current conversation
+ */
+function startNewSession(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>): void {
+  // Increment session version and tear down old session
+  currentSessionVersion++;
+  if (currentSession) {
+    teardownSession(currentSession);
+  }
+
+  // Create and initialize new session
+  const conversationId = adapter.getConversationId();
+  const newSession = createSession(conversationId, currentSessionVersion, adapter.id);
+  currentSession = newSession;
+
+  log('Starting session', newSession.version, 'for conversation', conversationId);
+
+  // Reset UI to loading
+  resetUIToLoading();
+
+  // Set up title edit handler
+  setupTitleEdit(newSession);
+
+  // Set up title observation for auto-sync
+  newSession.titleUnsubscribe = adapter.observeTitleChanges(() => {
+    if (!newSession.titleLocked) {
+      updateTitle(adapter, newSession);
+    }
+  });
+
+  // Boot the TOC for this session
+  bootTOC(adapter, newSession);
+}
+
+/**
+ * Starts live update observer after initial TOC render
+ * Watches for new messages and updates TOC without reloading
+ */
+function startLiveUpdates(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, session: Session): void {
+  if (!isSessionCurrent(session)) return;
+
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastRefreshTime = 0;
+  const debounceDelay = 400; // 400ms debounce for streaming
+  const minRefreshInterval = 1000; // Never refresh more than once per second even if signature changes
+
+  /**
+   * Re-evaluate and refresh TOC if messages changed and throttle allows
+   */
+  const updateTOC = () => {
+    if (!isSessionCurrent(session)) return;
+
+    const now = Date.now();
+    // Check throttle: ensure minimum interval between refreshes
+    if (now - lastRefreshTime < minRefreshInterval) {
+      log('Session', session.version, 'throttled refresh (< 1s since last update)');
+      return;
+    }
+
+    const messages = adapter.getMessages();
+    const userMessages = getUserMessages(messages);
+    const newSignature = userMessages.map((m) => m.messageId).join(',');
+
+    // Only update if signature changed (new/removed messages)
+    if (newSignature !== session.lastSignature) {
+      session.lastSignature = newSignature;
+      lastRefreshTime = now;
+      refreshTOC(adapter, false, false, session);
+      if (newSignature !== '') {
+        log('Session', session.version, 'TOC updated with', newSignature.split(',').length, 'user messages');
+      }
+    }
+  };
+
+  /**
+   * Debounced mutation handler
+   */
+  const onMutation = () => {
+    if (!isSessionCurrent(session)) return;
+
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(updateTOC, debounceDelay);
+  };
+
+  /**
+   * Observer that ignores mutations inside sidebar to avoid self-triggering
+   */
+  const liveObserver = new MutationObserver((mutations) => {
+    if (!isSessionCurrent(session)) return;
+
+    // Filter out mutations from within the sidebar (ignore self-triggers)
+    const sidebar = document.getElementById(SIDEBAR_ID);
+    const hasSidebarMutation = mutations.some((mutation) => {
+      if (sidebar && mutation.target) {
+        // Check if mutation target or any ancestor is the sidebar
+        let current: Node | null = mutation.target;
+        while (current) {
+          if (current === sidebar) {
+            return true;
+          }
+          current = current.parentNode;
+        }
+      }
+      return false;
+    });
+
+    if (!hasSidebarMutation) {
+      onMutation();
+    }
+  });
+
+  // Store observer reference in session
+  session.liveObserver = liveObserver;
+  session.liveDebounceTimer = debounceTimer;
+
+  // Start observing document body
+  liveObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  log('Session', session.version, 'live updates enabled');
+}
+function bootTOC(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, session: Session): void {
+  let attempt = 0;
+  const maxAttempts = 10;
+
+  /**
+   * Attempts to load TOC by extracting messages
+   */
+  const attemptLoad = () => {
+    if (!isSessionCurrent(session)) return;
+    if (session.isComplete) return;
+
+    attempt++;
+    const isLoading = attempt < maxAttempts;
+    const isObserverActive = attempt < maxAttempts;
+    const newSignature = refreshTOC(adapter, isLoading, isObserverActive, session);
+
+    // If we found messages and signature changed, mark complete and transition to live updates
+    if (newSignature && newSignature !== '' && newSignature !== session.lastSignature) {
+      if (!isSessionCurrent(session)) return;
+
+      session.lastSignature = newSignature;
+      session.isComplete = true;
+
+      log('Session', session.version, 'TOC loaded with', newSignature.split(',').length, 'user messages');
+
+      // Update title now that we have messages
+      updateTitle(adapter, session);
+
+      // Resolve bookmarks and re-render TOC with bookmark indicators
+      resolveAndCacheBookmarks(adapter, session).then(() => {
+        if (isSessionCurrent(session)) {
+          refreshTOC(adapter, false, false, session);
+        }
+      });
+
+      // Clean up boot observer and retry timeout
+      if (session.bootObserver) {
+        session.bootObserver.disconnect();
+        session.bootObserver = null;
+      }
+      if (session.bootRetryTimeout) {
+        clearTimeout(session.bootRetryTimeout);
+        session.bootRetryTimeout = null;
+      }
+
+      // Transition to live update mode
+      startLiveUpdates(adapter, session);
+      return;
+    }
+
+    // If we haven't exceeded max attempts, schedule next retry
+    if (attempt < maxAttempts) {
+      if (!isSessionCurrent(session)) return;
+      session.bootRetryTimeout = setTimeout(attemptLoad, 500);
+    } else {
+      // Max attempts reached with no messages
+      if (!isSessionCurrent(session)) return;
+      log('Session', session.version, 'boot max retries exhausted - showing empty state');
+      refreshTOC(adapter, false, true, session); // isObserverActive=true even after retries
+    }
+  };
+
+  /**
+   * Observer callback: triggers re-evaluation on any DOM mutation
+   * Debounced to avoid thrashing on rapid mutations
+   */
+  const onMutationObserved = () => {
+    if (!isSessionCurrent(session)) return;
+
+    // Clear existing debounce timer
+    if (session.bootDebounceTimer) {
+      clearTimeout(session.bootDebounceTimer);
+    }
+
+    // Debounce: wait 100ms for mutations to settle before re-checking
+    session.bootDebounceTimer = setTimeout(() => {
+      if (!isSessionCurrent(session)) return;
+      log('Session', session.version, 'DOM mutation detected, re-evaluating messages');
+      attemptLoad();
+    }, 100);
+  };
+
+  /**
+   * MutationObserver to detect any DOM changes
+   * This will trigger re-evaluation when virtualized messages appear
+   */
+  const bootObserver = new MutationObserver(onMutationObserved);
+
+  session.bootObserver = bootObserver;
+
+  // Start observing the document body for any changes
+  bootObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  log('Session', session.version, 'boot started');
+
+  // Start immediate retry loop
+  attemptLoad();
+}
+
+// Start the extension
+init();

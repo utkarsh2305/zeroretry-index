@@ -42,6 +42,7 @@ High-level steps:
 
 **In scope**
 - ChatGPT web support
+    “Supported: ChatGPT on chatgpt.com/*
 - Conversation index from user messages
 - Important / starred sections
 - Search within the current conversation
