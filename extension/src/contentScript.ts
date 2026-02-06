@@ -21,6 +21,7 @@ import {
   loadAllSavedItems
 } from './core/storage';
 import { renderSavedItem } from './ui/savedItemComponent';
+import { generateSmartLabel } from './core/labelGenerator';
 
 const SIDEBAR_ID = 'zeroretry-index-sidebar';
 const SIDEBAR_BODY_ID = 'zeroretry-sidebar-body';
@@ -42,6 +43,302 @@ let uiState: UIState = 'expanded';
 // Tab state: 'index' | 'saved'
 type SidebarTab = 'index' | 'saved';
 let activeTab: SidebarTab = 'index';
+
+// Search state
+let searchQuery = '';
+
+// Theme state
+type Theme = 'light' | 'dark';
+let currentTheme: Theme = 'light';
+
+// Theme color palettes
+const themes = {
+  light: {
+    panelBg: '#ffffff',
+    panelBorder: '#d1d5db',
+    headerBg: '#f9fafb',
+    headerBorder: '#e5e7eb',
+    text: '#374151',
+    textSecondary: '#6b7280',
+    textMuted: '#9ca3af',
+    itemBorder: '#f0f0f0',
+    itemHover: '#f3f4f6',
+    highlight: '#fef3c7',
+    tabActive: '#111827',
+    tabInactive: '#6b7280',
+    tabActiveBorder: '#10b981',
+    searchBg: '#f9fafb',
+    searchBorder: '#e5e7eb',
+    searchText: '#374151',
+    searchPlaceholder: '#9ca3af',
+    buttonBg: '#1f2937',
+    buttonBorder: '#374151',
+    buttonText: '#ffffff',
+    closeBtnBg: 'transparent',
+    closeBtnBorder: '#d1d5db',
+    closeBtnText: '#6b7280',
+    closeBtnHoverBg: '#fee2e2',
+    closeBtnHoverBorder: '#fca5a5',
+    closeBtnHoverText: '#dc2626',
+    collapsedBg: 'rgba(31, 41, 55, 0.85)',
+    collapsedBorder: 'rgba(55, 65, 81, 0.5)',
+    collapsedHoverBg: 'rgba(55, 65, 81, 0.9)',
+    platformHeaderBg: '#f3f4f6',
+    platformHeaderText: '#374151',
+    platformHeaderBorder: '#e5e7eb',
+    bookmarkActive: '#f59e0b',
+    bookmarkInactive: '#9ca3af',
+    bookmarkHover: '#d97706'
+  },
+  dark: {
+    panelBg: '#1f2937',
+    panelBorder: '#374151',
+    headerBg: '#111827',
+    headerBorder: '#374151',
+    text: '#e5e7eb',
+    textSecondary: '#9ca3af',
+    textMuted: '#6b7280',
+    itemBorder: '#374151',
+    itemHover: '#374151',
+    highlight: '#92400e',
+    tabActive: '#f3f4f6',
+    tabInactive: '#9ca3af',
+    tabActiveBorder: '#10b981',
+    searchBg: '#111827',
+    searchBorder: '#374151',
+    searchText: '#e5e7eb',
+    searchPlaceholder: '#6b7280',
+    buttonBg: '#374151',
+    buttonBorder: '#4b5563',
+    buttonText: '#ffffff',
+    closeBtnBg: 'transparent',
+    closeBtnBorder: '#4b5563',
+    closeBtnText: '#9ca3af',
+    closeBtnHoverBg: 'rgba(239, 68, 68, 0.2)',
+    closeBtnHoverBorder: '#ef4444',
+    closeBtnHoverText: '#f87171',
+    collapsedBg: 'rgba(17, 24, 39, 0.9)',
+    collapsedBorder: 'rgba(55, 65, 81, 0.7)',
+    collapsedHoverBg: 'rgba(31, 41, 55, 0.95)',
+    platformHeaderBg: '#111827',
+    platformHeaderText: '#e5e7eb',
+    platformHeaderBorder: '#374151',
+    bookmarkActive: '#f59e0b',
+    bookmarkInactive: '#6b7280',
+    bookmarkHover: '#fbbf24'
+  }
+};
+
+/**
+ * Debounce utility function
+ */
+function debounce<T extends (...args: any[]) => void>(fn: T, ms: number): (...args: Parameters<T>) => void {
+  let timer: number | undefined;
+  return (...args: Parameters<T>) => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    timer = window.setTimeout(() => fn(...args), ms);
+  };
+}
+
+/**
+ * Detects if the current page is in dark mode
+ */
+function detectDarkMode(): boolean {
+  const html = document.documentElement;
+  const body = document.body;
+
+  // Check DOM attributes (most AI platforms use these)
+  if (html.getAttribute('data-color-mode') === 'dark') return true;
+  if (html.getAttribute('data-theme') === 'dark') return true;
+  if (html.classList.contains('dark')) return true;
+  if (body.classList.contains('dark')) return true;
+
+  // Check for common CSS custom properties that indicate dark mode
+  const computedStyle = getComputedStyle(html);
+  const bgColor = computedStyle.getPropertyValue('--main-surface-primary') ||
+                  computedStyle.getPropertyValue('--bg-color') ||
+                  computedStyle.backgroundColor;
+
+  if (bgColor && isDarkColor(bgColor)) return true;
+
+  // Fall back to system preference
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+/**
+ * Checks if a color string represents a dark color
+ */
+function isDarkColor(color: string): boolean {
+  // Handle rgb/rgba format
+  const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (rgbMatch) {
+    const r = parseInt(rgbMatch[1], 10);
+    const g = parseInt(rgbMatch[2], 10);
+    const b = parseInt(rgbMatch[3], 10);
+    // Calculate relative luminance
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance < 0.5;
+  }
+
+  // Handle hex format
+  const hexMatch = color.match(/^#([0-9a-f]{6})$/i);
+  if (hexMatch) {
+    const hex = hexMatch[1];
+    const r = parseInt(hex.slice(0, 2), 16);
+    const g = parseInt(hex.slice(2, 4), 16);
+    const b = parseInt(hex.slice(4, 6), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance < 0.5;
+  }
+
+  return false;
+}
+
+/**
+ * Applies the current theme to all sidebar elements
+ */
+function applyTheme(): void {
+  const t = themes[currentTheme];
+
+  // Panel
+  const panel = document.getElementById('zeroretry-panel');
+  if (panel) {
+    panel.style.backgroundColor = t.panelBg;
+    panel.style.borderColor = t.panelBorder;
+  }
+
+  // Header
+  const header = document.querySelector('.zeroretry-header') as HTMLElement;
+  if (header) {
+    header.style.backgroundColor = t.headerBg;
+    header.style.borderBottomColor = t.headerBorder;
+  }
+
+  // Title
+  const title = document.getElementById(SIDEBAR_TITLE_ID);
+  if (title) {
+    title.style.color = t.tabActive;
+  }
+
+  // Tab bar
+  const tabBar = document.querySelector('.zeroretry-tabs') as HTMLElement;
+  if (tabBar) {
+    tabBar.style.backgroundColor = t.headerBg;
+    tabBar.style.borderBottomColor = t.headerBorder;
+  }
+
+  // Tabs
+  const tocTab = document.getElementById(SIDEBAR_TOC_TAB_ID);
+  const savedTab = document.getElementById(SIDEBAR_SAVED_TAB_ID);
+  if (tocTab) styleTab(tocTab, activeTab === 'index');
+  if (savedTab) styleTab(savedTab, activeTab === 'saved');
+
+  // Search container
+  const searchContainer = document.getElementById('zeroretry-search-container');
+  if (searchContainer) {
+    searchContainer.style.backgroundColor = t.headerBg;
+    searchContainer.style.borderBottomColor = t.headerBorder;
+  }
+
+  // Search input
+  const searchInput = document.getElementById('zeroretry-search-input') as HTMLInputElement;
+  if (searchInput) {
+    searchInput.style.backgroundColor = t.searchBg;
+    searchInput.style.borderColor = t.searchBorder;
+    searchInput.style.color = t.searchText;
+  }
+
+  // Loading/empty states
+  const loading = document.getElementById(SIDEBAR_LOADING_ID);
+  const empty = document.getElementById(SIDEBAR_EMPTY_ID);
+  if (loading) loading.style.color = t.textMuted;
+  if (empty) empty.style.color = t.textMuted;
+
+  // Collapsed strip
+  const collapsedStrip = document.getElementById('zeroretry-collapsed-strip');
+  if (collapsedStrip) {
+    collapsedStrip.style.backgroundColor = t.collapsedBg;
+    collapsedStrip.style.borderColor = t.collapsedBorder;
+  }
+
+  // Collapse button
+  const collapseBtn = document.getElementById('zeroretry-collapse-btn');
+  if (collapseBtn) {
+    collapseBtn.style.backgroundColor = t.buttonBg;
+    collapseBtn.style.borderColor = t.buttonBorder;
+    collapseBtn.style.color = t.buttonText;
+  }
+
+  // Close button
+  const closeBtn = document.getElementById('zeroretry-close-btn');
+  if (closeBtn) {
+    closeBtn.style.backgroundColor = t.closeBtnBg;
+    closeBtn.style.borderColor = t.closeBtnBorder;
+    closeBtn.style.color = t.closeBtnText;
+  }
+
+  // Re-render saved panel if active
+  if (activeTab === 'saved' && currentSession) {
+    renderSavedPanel(currentSession);
+  }
+
+  log('Theme applied:', currentTheme);
+}
+
+/**
+ * Initializes theme detection and sets up observer for theme changes
+ */
+function initThemeDetection(): void {
+  // Detect initial theme
+  currentTheme = detectDarkMode() ? 'dark' : 'light';
+  log('Initial theme detected:', currentTheme);
+
+  // Watch for theme changes on html element
+  const themeObserver = new MutationObserver(() => {
+    const newTheme = detectDarkMode() ? 'dark' : 'light';
+    if (newTheme !== currentTheme) {
+      currentTheme = newTheme;
+      applyTheme();
+      // Re-render TOC with new theme colors
+      if (currentSession) {
+        const url = new URL(window.location.href);
+        const adapter = getAdapterForUrl(url);
+        if (adapter) {
+          refreshTOC(adapter, false, false, currentSession);
+        }
+      }
+    }
+  });
+
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['class', 'data-color-mode', 'data-theme', 'style']
+  });
+
+  // Also observe body for class changes
+  themeObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['class']
+  });
+
+  // Listen for system theme changes
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    const newTheme = detectDarkMode() ? 'dark' : 'light';
+    if (newTheme !== currentTheme) {
+      currentTheme = newTheme;
+      applyTheme();
+      if (currentSession) {
+        const url = new URL(window.location.href);
+        const adapter = getAdapterForUrl(url);
+        if (adapter) {
+          refreshTOC(adapter, false, false, currentSession);
+        }
+      }
+    }
+  });
+}
 
 /**
  * Conditional logging based on DEBUG flag
@@ -173,8 +470,7 @@ function resetUIToLoading(): void {
   if (toc) toc.style.display = 'none';
 }
 function buildTOCLabel(text: string): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  return normalized.length > 80 ? normalized.substring(0, 80) + '...' : normalized;
+  return generateSmartLabel(text, 60);
 }
 
 /**
@@ -211,6 +507,12 @@ function refreshTOC(
   const userMessages = getUserMessages(messages);
   const currentSignature = userMessages.map((m) => m.messageId).join(',');
 
+  // Filter messages based on search query
+  const query = searchQuery.trim().toLowerCase();
+  const displayMessages = query
+    ? userMessages.filter(msg => msg.text.toLowerCase().includes(query))
+    : userMessages;
+
   // Hide all states initially
   const loading = document.getElementById(SIDEBAR_LOADING_ID);
   const empty = document.getElementById(SIDEBAR_EMPTY_ID);
@@ -234,6 +536,12 @@ function refreshTOC(
       }
       empty.style.display = 'block';
     }
+  } else if (displayMessages.length === 0 && query) {
+    // Search returned no results
+    if (empty && activeTab === 'index') {
+      empty.textContent = `No results for "${searchQuery}"`;
+      empty.style.display = 'block';
+    }
   } else {
     // Show TOC list - only rebuild if signature changed (only if on index tab)
     if (toc) {
@@ -241,8 +549,9 @@ function refreshTOC(
       // Clear existing list
       toc.innerHTML = '';
 
-      // Build list items
-      userMessages.forEach((msg, index) => {
+      // Build list items - use displayMessages (filtered by search)
+      const t = themes[currentTheme];
+      displayMessages.forEach((msg, index) => {
         const item = document.createElement('div');
         item.className = 'zeroretry-toc-item';
         item.style.display = 'flex';
@@ -250,7 +559,7 @@ function refreshTOC(
         item.style.gap = '8px';
         item.style.cursor = 'pointer';
         item.style.padding = '10px 12px';
-        item.style.borderBottom = '1px solid #f0f0f0';
+        item.style.borderBottom = `1px solid ${t.itemBorder}`;
         item.style.transition = 'background-color 0.2s';
 
         // Text label
@@ -260,7 +569,7 @@ function refreshTOC(
         label.title = msg.text;
         label.style.flex = '1';
         label.style.fontSize = '14px';
-        label.style.color = '#374151';
+        label.style.color = t.text;
         label.style.overflow = 'hidden';
         label.style.textOverflow = 'ellipsis';
         label.style.whiteSpace = 'nowrap';
@@ -276,7 +585,7 @@ function refreshTOC(
           border: 'none',
           cursor: 'pointer',
           fontSize: '14px',
-          color: isBookmarked ? '#f59e0b' : '#9ca3af',
+          color: isBookmarked ? t.bookmarkActive : t.bookmarkInactive,
           padding: '0 4px',
           flexShrink: '0',
           transition: 'color 0.2s'
@@ -293,12 +602,12 @@ function refreshTOC(
         // Hover effect for bookmark button
         bookmarkBtn.addEventListener('mouseenter', () => {
           if (!session?.savedMessageIds.has(msg.messageId)) {
-            bookmarkBtn.style.color = '#d97706';
+            bookmarkBtn.style.color = t.bookmarkHover;
           }
         });
         bookmarkBtn.addEventListener('mouseleave', () => {
           const stillBookmarked = session?.savedMessageIds.has(msg.messageId) ?? false;
-          bookmarkBtn.style.color = stillBookmarked ? '#f59e0b' : '#9ca3af';
+          bookmarkBtn.style.color = stillBookmarked ? t.bookmarkActive : t.bookmarkInactive;
         });
 
         item.appendChild(label);
@@ -306,7 +615,7 @@ function refreshTOC(
 
         // Hover effect for item
         item.addEventListener('mouseenter', () => {
-          item.style.backgroundColor = '#f3f4f6';
+          item.style.backgroundColor = t.itemHover;
         });
         item.addEventListener('mouseleave', () => {
           item.style.backgroundColor = 'transparent';
@@ -317,7 +626,7 @@ function refreshTOC(
           const success = adapter.scrollToMessage(msg.messageId);
           if (success) {
             // Visual confirmation: briefly highlight
-            item.style.backgroundColor = '#fef3c7';
+            item.style.backgroundColor = t.highlight;
             setTimeout(() => {
               item.style.backgroundColor = 'transparent';
             }, 800);
@@ -475,8 +784,8 @@ function injectSidebar(): void {
   tabBar.className = 'zeroretry-tabs';
   Object.assign(tabBar.style, {
     display: 'flex',
-    borderBottom: '1px solid #e5e7eb',
-    backgroundColor: '#f9fafb',
+    borderBottom: `1px solid ${themes[currentTheme].headerBorder}`,
+    backgroundColor: themes[currentTheme].headerBg,
     flexShrink: '0'
   });
 
@@ -500,23 +809,63 @@ function injectSidebar(): void {
   tabBar.appendChild(bookmarksTab);
   body.appendChild(tabBar);
 
+  // Search input container
+  const searchContainer = document.createElement('div');
+  searchContainer.id = 'zeroretry-search-container';
+  searchContainer.className = 'zeroretry-search-container';
+  Object.assign(searchContainer.style, {
+    padding: '8px 12px',
+    borderBottom: `1px solid ${themes[currentTheme].headerBorder}`,
+    backgroundColor: themes[currentTheme].headerBg,
+    display: activeTab === 'index' ? 'block' : 'none'
+  });
+
+  const searchInput = document.createElement('input');
+  searchInput.id = 'zeroretry-search-input';
+  searchInput.type = 'text';
+  searchInput.placeholder = 'Filter messages...';
+  Object.assign(searchInput.style, {
+    width: '100%',
+    padding: '8px 10px',
+    fontSize: '13px',
+    border: `1px solid ${themes[currentTheme].searchBorder}`,
+    borderRadius: '6px',
+    backgroundColor: themes[currentTheme].searchBg,
+    color: themes[currentTheme].searchText,
+    outline: 'none',
+    boxSizing: 'border-box'
+  });
+
+  // Focus styles
+  searchInput.addEventListener('focus', () => {
+    searchInput.style.borderColor = themes[currentTheme].tabActiveBorder;
+    searchInput.style.boxShadow = `0 0 0 2px ${themes[currentTheme].tabActiveBorder}33`;
+  });
+  searchInput.addEventListener('blur', () => {
+    searchInput.style.borderColor = themes[currentTheme].searchBorder;
+    searchInput.style.boxShadow = 'none';
+  });
+
+  searchContainer.appendChild(searchInput);
+  body.appendChild(searchContainer);
+
   // Loading state
   const loading = document.createElement('div');
   loading.id = SIDEBAR_LOADING_ID;
   loading.textContent = 'Loading messages… (scroll if needed)';
   loading.style.padding = '16px';
-  loading.style.color = '#9ca3af';
+  loading.style.color = themes[currentTheme].textMuted;
   loading.style.fontSize = '14px';
   loading.style.textAlign = 'center';
   loading.style.display = 'block';
   body.appendChild(loading);
-  
+
   // Empty state
   const empty = document.createElement('div');
   empty.id = SIDEBAR_EMPTY_ID;
   empty.textContent = 'No messages found';
   empty.style.padding = '16px';
-  empty.style.color = '#9ca3af';
+  empty.style.color = themes[currentTheme].textMuted;
   empty.style.fontSize = '14px';
   empty.style.textAlign = 'center';
   empty.style.display = 'none';
@@ -635,19 +984,20 @@ function applySidebarStyles(
   });
 
   // Collapsed strip (slim vertical bar - styled as subtle "handle")
+  const tCollapsed = themes[currentTheme];
   Object.assign(collapsedStrip.style, {
     pointerEvents: 'auto',
     display: uiState === 'collapsed' ? 'flex' : 'none',
     flexDirection: 'column',
     alignItems: 'center',
-    justifyContent: 'center', // Vertically center logo + chevron
+    justifyContent: 'center',
     width: '48px',
     height: '100%',
-    backgroundColor: 'rgba(31, 41, 55, 0.85)', // Semi-transparent
-    border: '1px solid rgba(55, 65, 81, 0.5)', // Softer border
+    backgroundColor: tCollapsed.collapsedBg,
+    border: `1px solid ${tCollapsed.collapsedBorder}`,
     borderRadius: '8px',
     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-    backdropFilter: 'blur(8px)', // Subtle glass effect
+    backdropFilter: 'blur(8px)',
     padding: '12px 0',
     gap: '12px',
     cursor: 'pointer',
@@ -704,21 +1054,22 @@ function applySidebarStyles(
 
   // Hover effect for collapsed strip
   collapsedStrip.addEventListener('mouseenter', () => {
-    collapsedStrip.style.backgroundColor = 'rgba(55, 65, 81, 0.9)';
+    collapsedStrip.style.backgroundColor = tCollapsed.collapsedHoverBg;
   });
   collapsedStrip.addEventListener('mouseleave', () => {
-    collapsedStrip.style.backgroundColor = 'rgba(31, 41, 55, 0.85)';
+    collapsedStrip.style.backgroundColor = tCollapsed.collapsedBg;
   });
 
   // Expanded panel (drawer)
+  const t = themes[currentTheme];
   Object.assign(expandedPanel.style, {
     pointerEvents: 'auto',
     display: uiState === 'expanded' ? 'flex' : 'none',
     flexDirection: 'column',
     width: '320px',
     height: '100%',
-    backgroundColor: '#ffffff',
-    border: '1px solid #d1d5db',
+    backgroundColor: t.panelBg,
+    border: `1px solid ${t.panelBorder}`,
     borderRadius: '8px',
     boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
     overflow: 'hidden',
@@ -731,9 +1082,9 @@ function applySidebarStyles(
     justifyContent: 'space-between',
     alignItems: 'center',
     gap: '8px',
-    padding: '12px 16px', // Reduced padding
-    borderBottom: '1px solid #e5e7eb',
-    backgroundColor: '#f9fafb',
+    padding: '12px 16px',
+    borderBottom: `1px solid ${t.headerBorder}`,
+    backgroundColor: t.headerBg,
     flexShrink: '0'
   });
 
@@ -777,7 +1128,7 @@ function applySidebarStyles(
     margin: '0',
     fontSize: '16px',
     fontWeight: '600',
-    color: '#111827',
+    color: t.tabActive,
     whiteSpace: 'nowrap',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
@@ -789,9 +1140,9 @@ function applySidebarStyles(
     padding: '6px 10px',
     fontSize: '14px',
     fontWeight: 'bold',
-    color: '#ffffff',
-    backgroundColor: '#1f2937',
-    border: '1px solid #374151',
+    color: t.buttonText,
+    backgroundColor: t.buttonBg,
+    border: `1px solid ${t.buttonBorder}`,
     borderRadius: '6px',
     cursor: 'pointer',
     transition: 'all 0.2s',
@@ -800,11 +1151,11 @@ function applySidebarStyles(
 
   // Add hover effect to collapse button
   collapseButton.addEventListener('mouseenter', () => {
-    collapseButton.style.backgroundColor = '#374151';
+    collapseButton.style.backgroundColor = t.buttonBorder;
   });
 
   collapseButton.addEventListener('mouseleave', () => {
-    collapseButton.style.backgroundColor = '#1f2937';
+    collapseButton.style.backgroundColor = t.buttonBg;
   });
 
   // Close button styles (minimize to icon)
@@ -812,9 +1163,9 @@ function applySidebarStyles(
     padding: '6px 10px',
     fontSize: '16px',
     fontWeight: 'bold',
-    color: '#6b7280',
-    backgroundColor: 'transparent',
-    border: '1px solid #d1d5db',
+    color: t.closeBtnText,
+    backgroundColor: t.closeBtnBg,
+    border: `1px solid ${t.closeBtnBorder}`,
     borderRadius: '6px',
     cursor: 'pointer',
     transition: 'all 0.2s',
@@ -823,15 +1174,15 @@ function applySidebarStyles(
 
   // Add hover effect to close button
   closeButton.addEventListener('mouseenter', () => {
-    closeButton.style.backgroundColor = '#fee2e2';
-    closeButton.style.borderColor = '#fca5a5';
-    closeButton.style.color = '#dc2626';
+    closeButton.style.backgroundColor = t.closeBtnHoverBg;
+    closeButton.style.borderColor = t.closeBtnHoverBorder;
+    closeButton.style.color = t.closeBtnHoverText;
   });
 
   closeButton.addEventListener('mouseleave', () => {
-    closeButton.style.backgroundColor = 'transparent';
-    closeButton.style.borderColor = '#d1d5db';
-    closeButton.style.color = '#6b7280';
+    closeButton.style.backgroundColor = t.closeBtnBg;
+    closeButton.style.borderColor = t.closeBtnBorder;
+    closeButton.style.color = t.closeBtnText;
   });
 
   // Body styles
@@ -975,6 +1326,7 @@ async function toggleSave(
  * Styles a tab button based on active state
  */
 function styleTab(tab: HTMLElement, isActive: boolean): void {
+  const t = themes[currentTheme];
   Object.assign(tab.style, {
     flex: '1',
     padding: '10px 12px',
@@ -983,8 +1335,8 @@ function styleTab(tab: HTMLElement, isActive: boolean): void {
     cursor: 'pointer',
     fontSize: '13px',
     fontWeight: isActive ? '600' : '400',
-    color: isActive ? '#111827' : '#6b7280',
-    borderBottom: isActive ? '2px solid #10b981' : '2px solid transparent',
+    color: isActive ? t.tabActive : t.tabInactive,
+    borderBottom: isActive ? `2px solid ${t.tabActiveBorder}` : '2px solid transparent',
     transition: 'all 0.2s'
   });
 }
@@ -1001,18 +1353,21 @@ function switchTab(tab: SidebarTab): void {
   const savedPanel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
   const loading = document.getElementById(SIDEBAR_LOADING_ID);
   const empty = document.getElementById(SIDEBAR_EMPTY_ID);
+  const searchContainer = document.getElementById('zeroretry-search-container');
 
   if (tab === 'index') {
     if (tocTab) styleTab(tocTab, true);
     if (savedTab) styleTab(savedTab, false);
     if (toc) toc.style.display = 'block';
     if (savedPanel) savedPanel.style.display = 'none';
+    if (searchContainer) searchContainer.style.display = 'block';
     // Show loading/empty if applicable (handled by refreshTOC)
   } else {
     if (tocTab) styleTab(tocTab, false);
     if (savedTab) styleTab(savedTab, true);
     if (toc) toc.style.display = 'none';
     if (savedPanel) savedPanel.style.display = 'block';
+    if (searchContainer) searchContainer.style.display = 'none';
     if (loading) loading.style.display = 'none';
     if (empty) empty.style.display = 'none';
     // Render saved panel
@@ -1040,6 +1395,7 @@ function renderSavedPanel(session: Session): void {
  */
 function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
   const allItems = session.allSavedItems;
+  const t = themes[currentTheme];
 
   if (allItems.length === 0) {
     const emptyMsg = document.createElement('div');
@@ -1048,7 +1404,7 @@ function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
     Object.assign(emptyMsg.style, {
       padding: '24px 16px',
       textAlign: 'center',
-      color: '#9ca3af',
+      color: t.textMuted,
       fontSize: '14px'
     });
     panel.appendChild(emptyMsg);
@@ -1071,9 +1427,9 @@ function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
       padding: '10px 12px',
       fontSize: '13px',
       fontWeight: '600',
-      color: '#374151',
-      backgroundColor: '#f3f4f6',
-      borderBottom: '1px solid #e5e7eb'
+      color: t.platformHeaderText,
+      backgroundColor: t.platformHeaderBg,
+      borderBottom: `1px solid ${t.platformHeaderBorder}`
     });
     panel.appendChild(platformHeader);
 
@@ -1116,6 +1472,57 @@ function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
         panel.appendChild(itemElement);
       });
     });
+  });
+}
+
+/**
+ * Sets up the search input functionality
+ */
+function setupSearchInput(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, session: Session): void {
+  const searchInput = document.getElementById('zeroretry-search-input') as HTMLInputElement;
+  if (!searchInput) return;
+
+  // Clear previous value on new session
+  searchInput.value = '';
+  searchQuery = '';
+
+  // Create debounced search handler
+  const handleSearch = debounce((value: string) => {
+    if (!isSessionCurrent(session)) return;
+    searchQuery = value.toLowerCase();
+    refreshTOC(adapter, false, false, session);
+  }, 150);
+
+  // Remove old listeners by replacing the element
+  const newSearchInput = searchInput.cloneNode(true) as HTMLInputElement;
+  searchInput.parentNode?.replaceChild(newSearchInput, searchInput);
+
+  // Add new listener
+  newSearchInput.addEventListener('input', (e) => {
+    const target = e.target as HTMLInputElement;
+    handleSearch(target.value);
+  });
+
+  // Re-apply styles (they get lost on clone)
+  Object.assign(newSearchInput.style, {
+    width: '100%',
+    padding: '8px 10px',
+    fontSize: '13px',
+    border: `1px solid ${themes[currentTheme].searchBorder}`,
+    borderRadius: '6px',
+    backgroundColor: themes[currentTheme].searchBg,
+    color: themes[currentTheme].searchText,
+    outline: 'none',
+    boxSizing: 'border-box'
+  });
+
+  newSearchInput.addEventListener('focus', () => {
+    newSearchInput.style.borderColor = themes[currentTheme].tabActiveBorder;
+    newSearchInput.style.boxShadow = `0 0 0 2px ${themes[currentTheme].tabActiveBorder}33`;
+  });
+  newSearchInput.addEventListener('blur', () => {
+    newSearchInput.style.borderColor = themes[currentTheme].searchBorder;
+    newSearchInput.style.boxShadow = 'none';
   });
 }
 
@@ -1174,6 +1581,9 @@ function init(): void {
   // Log which adapter is being used
   log('Using adapter:', adapter.id);
 
+  // Initialize theme detection
+  initThemeDetection();
+
   // Wait for DOM to be ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
@@ -1222,6 +1632,9 @@ function startNewSession(adapter: NonNullable<ReturnType<typeof getAdapterForUrl
 
   // Set up title edit handler
   setupTitleEdit(newSession);
+
+  // Set up search input
+  setupSearchInput(adapter, newSession);
 
   // Set up title observation for auto-sync
   newSession.titleUnsubscribe = adapter.observeTitleChanges(() => {
