@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ZR Index",
+  "name": "ZeroRetry Index",
   "version": "1.0.0",
   "description": "Index and continue AI conversations across platforms",
   "permissions": [

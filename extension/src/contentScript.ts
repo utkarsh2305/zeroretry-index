@@ -686,7 +686,7 @@ function injectSidebar(): void {
   const collapsedStrip = document.createElement('div');
   collapsedStrip.id = 'zeroretry-collapsed-strip';
   collapsedStrip.className = 'zeroretry-collapsed-strip';
-  collapsedStrip.title = 'Expand ZR Index';
+  collapsedStrip.title = 'Expand ZeroRetry Index';
   collapsedStrip.addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
@@ -746,8 +746,8 @@ function injectSidebar(): void {
   // Icon only - clean and non-intrusive
   const iconImg = document.createElement('img');
   iconImg.src = chrome.runtime.getURL('public/icons/header-icon.svg');
-  iconImg.alt = 'ZR Index';
-  iconImg.title = 'ZR Index';
+  iconImg.alt = 'ZeroRetry Index';
+  iconImg.title = 'ZeroRetry Index';
   Object.assign(iconImg.style, {
     width: '20px',
     height: '20px'
@@ -924,7 +924,7 @@ function injectSidebar(): void {
   const minimizedIcon = document.createElement('div');
   minimizedIcon.id = 'zeroretry-minimized-icon';
   minimizedIcon.className = 'zeroretry-minimized-icon';
-  minimizedIcon.title = 'Open ZR Index';
+  minimizedIcon.title = 'Open ZeroRetry Index';
   const minIcon = document.createElement('img');
   minIcon.src = chrome.runtime.getURL('public/icons/header-icon.svg');
   minIcon.alt = 'ZR';
