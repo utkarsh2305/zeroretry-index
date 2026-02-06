@@ -5,20 +5,17 @@
 
 import { getAdapterForUrl } from './adapters';
 import type { ChatMessage, TitleResult, ChatPlatformId } from './adapters';
-import type { ResolvedSavedItem, SavedItem } from './core/savedItem';
+import type { ResolvedSavedItem } from './core/savedItem';
 import {
   createSavedItem,
   resolveSavedItems,
-  groupSavedItemsByPlatform,
-  getConversationUrl,
   PLATFORM_INFO
 } from './core/savedItem';
 import {
   getSavedItemsForConversation,
   addSavedItem,
   removeSavedItem,
-  removeSavedItemByMessageId,
-  loadAllSavedItems
+  removeSavedItemByMessageId
 } from './core/storage';
 import { renderSavedItem } from './ui/savedItemComponent';
 import { generateSmartLabel } from './core/labelGenerator';
@@ -369,9 +366,8 @@ interface Session {
   currentTitle: TitleResult | null;
   titleLocked: boolean;
   titleUnsubscribe: (() => void) | null;
-  // Saved items state
+  // Saved items state (current conversation only)
   savedItems: ResolvedSavedItem[];
-  allSavedItems: SavedItem[];
   savedMessageIds: Set<string>;
 }
 
@@ -407,7 +403,6 @@ function createSession(
     titleLocked: false,
     titleUnsubscribe: null,
     savedItems: [],
-    allSavedItems: [],
     savedMessageIds: new Set()
   };
 }
@@ -473,8 +468,26 @@ function buildTOCLabel(text: string): string {
   return generateSmartLabel(text, 60);
 }
 
+// Minimum length for a message to appear in index
+const MIN_MESSAGE_LENGTH = 10;
+
+// Known filler phrases to skip (case-insensitive, exact match)
+const FILLER_PHRASES = new Set([
+  'hi', 'hello', 'hey', 'yo',
+  'ok', 'okay', 'k', 'kk',
+  'yes', 'no', 'yep', 'nope', 'yeah', 'nah',
+  'thanks', 'thank you', 'thx', 'ty',
+  'please', 'pls',
+  'sure', 'alright', 'cool', 'nice', 'great',
+  'got it', 'understood', 'i see', 'makes sense',
+  'hmm', 'hm', 'ah', 'oh', 'uh',
+  'continue', 'go on', 'go ahead', 'next',
+  'done', 'finished', 'good', 'perfect'
+]);
+
 /**
  * Filters and deduplicates messages to user messages only
+ * Also filters out short messages and known filler phrases
  */
 function getUserMessages(messages: ChatMessage[]): ChatMessage[] {
   const seen = new Set<string>();
@@ -485,6 +498,20 @@ function getUserMessages(messages: ChatMessage[]): ChatMessage[] {
     if (seen.has(msg.messageId)) {
       return false;
     }
+
+    const text = msg.text.trim();
+
+    // Filter 1: Skip messages that are too short
+    if (text.length < MIN_MESSAGE_LENGTH) {
+      return false;
+    }
+
+    // Filter 2: Skip known filler phrases (normalized: lowercase, trimmed)
+    const normalized = text.toLowerCase();
+    if (FILLER_PHRASES.has(normalized)) {
+      return false;
+    }
+
     seen.add(msg.messageId);
     return true;
   });
@@ -1239,17 +1266,13 @@ function updateTitle(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, 
 }
 
 /**
- * Resolves and caches bookmarks for the current session
+ * Resolves and caches bookmarks for the current session (current conversation only)
  */
 async function resolveAndCacheBookmarks(
   adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>,
   session: Session
 ): Promise<void> {
   if (!isSessionCurrent(session)) return;
-
-  // Always load all saved items for global view
-  session.allSavedItems = await loadAllSavedItems();
-  log('All saved items loaded:', session.allSavedItems.length);
 
   // Load current conversation items only if we have a conversationKey
   if (session.conversationKey) {
@@ -1287,9 +1310,6 @@ async function toggleSave(
       session.savedMessageIds.delete(msg.messageId);
       session.savedItems = session.savedItems.filter((item: ResolvedSavedItem) => item.anchor.messageId !== msg.messageId);
 
-      // Refresh allSavedItems cache
-      session.allSavedItems = await loadAllSavedItems();
-
       // If Saved tab is active, re-render to reflect removal
       if (activeTab === 'saved') {
         renderSavedPanel(session);
@@ -1306,9 +1326,6 @@ async function toggleSave(
     await addSavedItem(savedItem);
     session.savedMessageIds.add(msg.messageId);
     session.savedItems.push({ ...savedItem, status: 'active', resolvedMessageId: msg.messageId });
-
-    // Refresh allSavedItems cache
-    session.allSavedItems = await loadAllSavedItems();
 
     // If Saved tab is active, re-render to show new item
     if (activeTab === 'saved') {
@@ -1378,29 +1395,22 @@ function switchTab(tab: SidebarTab): void {
 }
 
 /**
- * Renders the saved panel content - always shows all saved items grouped by platform
+ * Renders the saved panel content - shows only current conversation's saved items
  */
 function renderSavedPanel(session: Session): void {
   const panel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
   if (!panel) return;
 
   panel.innerHTML = '';
-
-  // Always show all saved items (no dropdown toggle)
-  renderAllSavedItemsView(panel, session);
-}
-
-/**
- * Renders all saved items grouped by platform with expand/collapse functionality
- */
-function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
-  const allItems = session.allSavedItems;
   const t = themes[currentTheme];
 
-  if (allItems.length === 0) {
+  // Only show items from current conversation
+  const items = session.savedItems;
+
+  if (items.length === 0) {
     const emptyMsg = document.createElement('div');
     emptyMsg.className = 'zeroretry-saved-empty';
-    emptyMsg.textContent = 'No saved items yet';
+    emptyMsg.textContent = 'No saved items in this conversation';
     Object.assign(emptyMsg.style, {
       padding: '24px 16px',
       textAlign: 'center',
@@ -1411,67 +1421,33 @@ function renderAllSavedItemsView(panel: HTMLElement, session: Session): void {
     return;
   }
 
-  const grouped = groupSavedItemsByPlatform(allItems);
-
-  // Get adapter for scrollToMessage (only works for current conversation)
+  // Get adapter for scrollToMessage
   const url = new URL(window.location.href);
   const adapter = getAdapterForUrl(url);
 
-  grouped.forEach(platformGroup => {
-    // Platform header
-    const platformHeader = document.createElement('div');
-    platformHeader.className = 'zeroretry-platform-header';
-    const itemCount = platformGroup.conversations.reduce((sum, c) => sum + c.items.length, 0);
-    platformHeader.textContent = `${platformGroup.platformName} (${itemCount})`;
-    Object.assign(platformHeader.style, {
-      padding: '10px 12px',
-      fontSize: '13px',
-      fontWeight: '600',
-      color: t.platformHeaderText,
-      backgroundColor: t.platformHeaderBg,
-      borderBottom: `1px solid ${t.platformHeaderBorder}`
+  // Render each saved item (all from current conversation)
+  items.forEach(item => {
+    const itemElement = renderSavedItem(item, session.platformId as ChatPlatformId, {
+      onDelete: async (id: string) => {
+        await removeSavedItem(id);
+        session.savedItems = session.savedItems.filter(i => i.id !== id);
+        session.savedMessageIds.delete(item.anchor.messageId);
+        renderSavedPanel(session);
+        // Re-render TOC to update bookmark indicators
+        if (adapter) refreshTOC(adapter, false, false, session);
+      },
+      onUpdate: async () => {
+        // Refresh saved items after update
+        if (adapter) {
+          await resolveAndCacheBookmarks(adapter, session);
+          renderSavedPanel(session);
+        }
+      },
+      scrollToMessage: (messageId: string) => {
+        return adapter ? adapter.scrollToMessage(messageId) : false;
+      }
     });
-    panel.appendChild(platformHeader);
-
-    // Items under this platform - use renderSavedItem for expand/collapse with continuation editor
-    platformGroup.conversations.forEach(conv => {
-      conv.items.forEach(item => {
-        // Convert SavedItem to ResolvedSavedItem for the component
-        // For items not in current conversation, mark as 'orphaned' (can't scroll to them)
-        const isCurrentConversation = item.conversationKey === session.conversationKey;
-        const resolvedItem: ResolvedSavedItem = {
-          ...item,
-          status: isCurrentConversation ? 'active' : 'orphaned',
-          resolvedMessageId: isCurrentConversation ? item.anchor.messageId : null
-        };
-
-        const itemElement = renderSavedItem(resolvedItem, platformGroup.platform, {
-          onDelete: async (id: string) => {
-            await removeSavedItem(id);
-            // Refresh the saved items list
-            session.allSavedItems = await loadAllSavedItems();
-            renderSavedPanel(session);
-          },
-          onUpdate: async () => {
-            // Refresh all items after update
-            session.allSavedItems = await loadAllSavedItems();
-            renderSavedPanel(session);
-          },
-          scrollToMessage: (messageId: string) => {
-            // Only works if item is in current conversation
-            if (isCurrentConversation && adapter) {
-              return adapter.scrollToMessage(messageId);
-            }
-            // For items in other conversations, open that conversation
-            const convUrl = getConversationUrl(item.sourcePlatform, item.conversationKey);
-            window.open(convUrl, '_blank');
-            return false;
-          }
-        });
-
-        panel.appendChild(itemElement);
-      });
-    });
+    panel.appendChild(itemElement);
   });
 }
 

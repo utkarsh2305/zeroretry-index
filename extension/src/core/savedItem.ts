@@ -76,7 +76,8 @@ export const PLATFORM_INFO: Record<ChatPlatformId, { name: string; newChatUrl: s
   claude: { name: 'Claude', newChatUrl: 'https://claude.ai/new' },
   perplexity: { name: 'Perplexity', newChatUrl: 'https://www.perplexity.ai/' },
   grok: { name: 'Grok', newChatUrl: 'https://x.com/i/grok' },
-  gemini: { name: 'Gemini', newChatUrl: 'https://gemini.google.com/app' }
+  gemini: { name: 'Gemini', newChatUrl: 'https://gemini.google.com/app' },
+  copilot: { name: 'Copilot', newChatUrl: 'https://copilot.microsoft.com/' }
 };
 
 /**
@@ -180,7 +181,7 @@ export function resolveSavedItems(
  * Gets available continuation target platforms (excludes current)
  */
 export function getAvailableTargets(currentPlatform: ChatPlatformId): ChatPlatformId[] {
-  const all: ChatPlatformId[] = ['chatgpt', 'claude', 'perplexity', 'grok', 'gemini'];
+  const all: ChatPlatformId[] = ['chatgpt', 'claude', 'perplexity', 'grok', 'gemini', 'copilot'];
   return all.filter(p => p !== currentPlatform);
 }
 
@@ -268,6 +269,8 @@ export function getConversationUrl(platform: ChatPlatformId, conversationKey: st
       return `https://x.com/i/grok?conversation=${convId}`;
     case 'gemini':
       return `https://gemini.google.com/app/${convId}`;
+    case 'copilot':
+      return `https://copilot.microsoft.com/c/${convId}`;
     default:
       return PLATFORM_INFO[platform].newChatUrl;
   }

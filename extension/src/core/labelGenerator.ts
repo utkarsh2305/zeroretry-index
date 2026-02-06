@@ -72,6 +72,9 @@ export function generateSmartLabel(text: string, maxLength: number = 60): string
     return '(empty)';
   }
 
+  // Store original for fallback if stripping leaves nothing useful
+  const original = normalized;
+
   // Strip filler phrases from start
   for (const pattern of FILLER_PATTERNS) {
     normalized = normalized.replace(pattern, '');
@@ -79,6 +82,11 @@ export function generateSmartLabel(text: string, maxLength: number = 60): string
 
   // Re-trim after stripping
   normalized = normalized.trim();
+
+  // If stripping left nothing, use the original (e.g., "Hi" -> "Hi")
+  if (normalized.length === 0) {
+    return capitalize(original);
+  }
 
   // Check for mid-sentence questions first (e.g., "Docker is installed, how do I confirm...")
   for (const pattern of MID_SENTENCE_PATTERNS) {

@@ -12,7 +12,7 @@
 /**
  * Supported chat platforms
  */
-export type ChatPlatformId = "chatgpt" | "claude" | "perplexity" | "grok" | "gemini";
+export type ChatPlatformId = "chatgpt" | "claude" | "perplexity" | "grok" | "gemini" | "copilot";
 
 /**
  * Role of a message in a conversation

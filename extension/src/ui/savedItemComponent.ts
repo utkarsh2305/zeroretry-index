@@ -194,19 +194,18 @@ function createCollapsedView(
     expandBtn.style.backgroundColor = 'transparent';
   });
 
-  // Click on content to jump to message
+  // Click on content to jump to message or open conversation
   content.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (item.resolvedMessageId) {
-      const success = callbacks.scrollToMessage(item.resolvedMessageId);
-      if (success) {
-        view.style.backgroundColor = '#fef3c7';
-        setTimeout(() => {
-          view.style.backgroundColor = 'transparent';
-        }, 800);
-      }
-    } else {
-      showToast('This message was not found. It may have been deleted.', true);
+    // Always call scrollToMessage - it handles cross-conversation navigation
+    // For current conversation: scrolls to message
+    // For other conversations: opens that conversation in a new tab
+    const success = callbacks.scrollToMessage(item.resolvedMessageId || item.anchor.messageId);
+    if (success) {
+      view.style.backgroundColor = '#fef3c7';
+      setTimeout(() => {
+        view.style.backgroundColor = 'transparent';
+      }, 800);
     }
   });
 

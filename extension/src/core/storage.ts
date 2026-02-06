@@ -184,7 +184,7 @@ export async function removeBookmarkByMessageId(
  */
 function extractPlatformFromKey(conversationKey: string): ChatPlatformId {
   const [platform] = conversationKey.split(':');
-  if (['chatgpt', 'claude', 'perplexity', 'grok', 'gemini'].includes(platform)) {
+  if (['chatgpt', 'claude', 'perplexity', 'grok', 'gemini', 'copilot'].includes(platform)) {
     return platform as ChatPlatformId;
   }
   return 'chatgpt'; // Fallback
