@@ -9,6 +9,7 @@ import type { ChatPlatformId } from '../adapters/base';
 import { performHandoff } from '../core/handoff';
 import { updateSavedItem, setMilestone } from '../core/storage';
 import { showToast } from './toast';
+import { renderTagPills, renderTagSelector } from './tagChips';
 
 /**
  * Callbacks for saved item interactions
@@ -151,6 +152,12 @@ function createCollapsedView(
 
   content.appendChild(label);
   content.appendChild(preview);
+
+  // Tag pills (if item has tags)
+  if (item.tags && item.tags.length > 0) {
+    const tagPills = renderTagPills(item.tags, 'light');
+    content.appendChild(tagPills);
+  }
 
   // Expand button
   const expandBtn = document.createElement('button');
@@ -411,6 +418,18 @@ function createExpandedView(
   milestoneRow.appendChild(milestoneLabel);
   milestoneRow.appendChild(milestoneLabelInput);
   view.appendChild(milestoneRow);
+
+  // Tag selector
+  const tagSelector = renderTagSelector(
+    item.tags || [],
+    'light',
+    async (newTags) => {
+      item.tags = newTags;
+      await updateSavedItem(item.id, { tags: newTags });
+      onUpdate();
+    }
+  );
+  view.appendChild(tagSelector);
 
   // Continue buttons
   const buttonsContainer = createContinueButtons(item, currentPlatform, continuation);

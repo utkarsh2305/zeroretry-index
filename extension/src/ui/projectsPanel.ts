@@ -7,6 +7,7 @@ import type { Project } from '../core/project';
 import type { SavedItem } from '../core/savedItem';
 import { PLATFORM_INFO } from '../core/savedItem';
 import type { ChatPlatformId } from '../adapters/base';
+import { renderTagFilterBar, renderTagPills } from './tagChips';
 
 interface ThemeColors {
   panelBg: string;
@@ -362,6 +363,24 @@ export function renderProjectDetail(
     container.appendChild(timeline);
   }
 
+  // Tag filter bar
+  let activeTagFilters: string[] = [];
+
+  const tagFilterBar = renderTagFilterBar(
+    // Determine theme from colors
+    theme.panelBg === '#ffffff' || theme.panelBg.toLowerCase() === '#fff' ? 'light' : 'dark',
+    (activeTags) => {
+      activeTagFilters = activeTags;
+      rebuildItemList();
+    }
+  );
+
+  // Check if any items have tags
+  const anyItemHasTag = items.some(i => i.tags && i.tags.length > 0);
+  if (anyItemHasTag) {
+    container.appendChild(tagFilterBar);
+  }
+
   // Items list
   const list = document.createElement('div');
   Object.assign(list.style, {
@@ -369,20 +388,37 @@ export function renderProjectDetail(
     overflowY: 'auto'
   });
 
-  if (items.length === 0) {
-    const empty = document.createElement('div');
-    empty.textContent = 'No items in this project yet. Star messages and assign them here.';
-    Object.assign(empty.style, {
-      padding: '24px 16px',
-      textAlign: 'center',
-      color: theme.textMuted,
-      fontSize: '13px'
-    });
-    list.appendChild(empty);
-  } else {
+  const currentThemeMode: 'light' | 'dark' = theme.panelBg === '#ffffff' || theme.panelBg.toLowerCase() === '#fff' ? 'light' : 'dark';
+
+  function rebuildItemList() {
+    list.innerHTML = '';
+
+    // Filter items by active tag filters (OR logic)
+    let filteredItems = items;
+    if (activeTagFilters.length > 0) {
+      filteredItems = items.filter(item =>
+        item.tags && item.tags.some(t => activeTagFilters.includes(t))
+      );
+    }
+
+    if (filteredItems.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = activeTagFilters.length > 0
+        ? 'No items match the selected tags.'
+        : 'No items in this project yet. Star messages and assign them here.';
+      Object.assign(empty.style, {
+        padding: '24px 16px',
+        textAlign: 'center',
+        color: theme.textMuted,
+        fontSize: '13px'
+      });
+      list.appendChild(empty);
+      return;
+    }
+
     // Group by platform
     const byPlatform = new Map<string, SavedItem[]>();
-    items.forEach(item => {
+    filteredItems.forEach(item => {
       const platform = item.sourcePlatform || 'unknown';
       if (!byPlatform.has(platform)) byPlatform.set(platform, []);
       byPlatform.get(platform)!.push(item);
@@ -439,6 +475,12 @@ export function renderProjectDetail(
         row.appendChild(label);
         row.appendChild(meta);
 
+        // Tag pills on item row
+        if (item.tags && item.tags.length > 0) {
+          const pills = renderTagPills(item.tags, currentThemeMode);
+          row.appendChild(pills);
+        }
+
         row.addEventListener('mouseenter', () => {
           row.style.backgroundColor = theme.itemHover;
         });
@@ -451,6 +493,9 @@ export function renderProjectDetail(
       });
     });
   }
+
+  // Initial render
+  rebuildItemList();
 
   container.appendChild(list);
   return container;
