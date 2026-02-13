@@ -54,6 +54,8 @@ export interface SavedItem {
   continuation?: ContinuationContext;
   /** Timestamp of last modification */
   modifiedAt?: number;
+  /** Optional project assignment */
+  projectId?: string;
   /** Schema version for future migrations */
   schemaVersion: 1;
 }

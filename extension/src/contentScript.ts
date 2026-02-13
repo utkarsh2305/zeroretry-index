@@ -19,6 +19,17 @@ import {
 } from './core/storage';
 import { renderSavedItem } from './ui/savedItemComponent';
 import { generateSmartLabel } from './core/labelGenerator';
+import { createProject } from './core/project';
+import type { Project } from './core/project';
+import {
+  loadProjects,
+  addProject as addProjectToStorage,
+  deleteProject as deleteProjectFromStorage,
+  assignItemToProject,
+  getSavedItemsForProject
+} from './core/storage';
+import { showProjectSelector } from './ui/projectSelector';
+import { renderProjectsList, renderProjectDetail } from './ui/projectsPanel';
 
 const SIDEBAR_ID = 'zeroretry-index-sidebar';
 const SIDEBAR_BODY_ID = 'zeroretry-sidebar-body';
@@ -29,6 +40,8 @@ const SIDEBAR_TITLE_ID = 'zeroretry-title';
 const SIDEBAR_TOC_TAB_ID = 'zeroretry-toc-tab';
 const SIDEBAR_SAVED_TAB_ID = 'zeroretry-saved-tab';
 const SIDEBAR_SAVED_PANEL_ID = 'zeroretry-saved-panel';
+const SIDEBAR_PROJECTS_TAB_ID = 'zeroretry-projects-tab';
+const SIDEBAR_PROJECTS_PANEL_ID = 'zeroretry-projects-panel';
 
 // Debug flag - set to true to enable logging
 const DEBUG = false;
@@ -37,8 +50,8 @@ const DEBUG = false;
 type UIState = 'expanded' | 'collapsed' | 'minimized';
 let uiState: UIState = 'expanded';
 
-// Tab state: 'index' | 'saved'
-type SidebarTab = 'index' | 'saved';
+// Tab state
+type SidebarTab = 'index' | 'saved' | 'projects';
 let activeTab: SidebarTab = 'index';
 
 // Search state
@@ -229,8 +242,10 @@ function applyTheme(): void {
   // Tabs
   const tocTab = document.getElementById(SIDEBAR_TOC_TAB_ID);
   const savedTab = document.getElementById(SIDEBAR_SAVED_TAB_ID);
+  const projectsTab = document.getElementById(SIDEBAR_PROJECTS_TAB_ID);
   if (tocTab) styleTab(tocTab, activeTab === 'index');
   if (savedTab) styleTab(savedTab, activeTab === 'saved');
+  if (projectsTab) styleTab(projectsTab, activeTab === 'projects');
 
   // Search container
   const searchContainer = document.getElementById('zeroretry-search-container');
@@ -279,6 +294,11 @@ function applyTheme(): void {
   // Re-render saved panel if active
   if (activeTab === 'saved' && currentSession) {
     renderSavedPanel(currentSession);
+  }
+
+  // Re-render projects panel if active
+  if (activeTab === 'projects') {
+    renderProjectsPanel();
   }
 
   log('Theme applied:', currentTheme);
@@ -832,8 +852,17 @@ function injectSidebar(): void {
   styleTab(bookmarksTab, false);
   bookmarksTab.addEventListener('click', () => switchTab('saved'));
 
+  // Projects tab
+  const projectsTab = document.createElement('button');
+  projectsTab.id = SIDEBAR_PROJECTS_TAB_ID;
+  projectsTab.textContent = 'Projects';
+  projectsTab.className = 'zeroretry-tab';
+  styleTab(projectsTab, false);
+  projectsTab.addEventListener('click', () => switchTab('projects'));
+
   tabBar.appendChild(tocTab);
   tabBar.appendChild(bookmarksTab);
+  tabBar.appendChild(projectsTab);
   body.appendChild(tabBar);
 
   // Search input container
@@ -915,6 +944,17 @@ function injectSidebar(): void {
     overflowY: 'auto'
   });
   body.appendChild(bookmarksPanel);
+
+  // Projects panel (hidden by default)
+  const projectsPanel = document.createElement('div');
+  projectsPanel.id = SIDEBAR_PROJECTS_PANEL_ID;
+  Object.assign(projectsPanel.style, {
+    display: 'none',
+    flex: '1',
+    overflowY: 'auto',
+    position: 'relative'
+  });
+  body.appendChild(projectsPanel);
 
   expandedPanel.appendChild(body);
   
@@ -1339,6 +1379,39 @@ async function toggleSave(
     saveBtn.style.color = '#f59e0b';
     saveBtn.title = 'Remove';
     console.log('[ZeroRetry Index] SAVED:', msg.messageId, 'convKey:', session.conversationKey, 'total:', session.savedItems.length);
+
+    // Show project selector dropdown
+    const sidebarBody = document.getElementById(SIDEBAR_BODY_ID);
+    if (sidebarBody) {
+      try {
+        const projects = await loadProjects();
+        if (projects.length > 0) {
+          showProjectSelector(
+            saveBtn,
+            sidebarBody,
+            projects,
+            themes[currentTheme],
+            async (projectId) => {
+              if (projectId) {
+                await assignItemToProject(savedItem.id, projectId);
+                console.log('[ZeroRetry Index] ASSIGNED to project:', projectId);
+              }
+            },
+            async () => {
+              const name = prompt('Project name:');
+              if (!name) return;
+              const desc = prompt('Description (optional):') || undefined;
+              const project = createProject(name, desc);
+              await addProjectToStorage(project);
+              await assignItemToProject(savedItem.id, project.id);
+              console.log('[ZeroRetry Index] CREATED+ASSIGNED project:', project.id);
+            }
+          );
+        }
+      } catch (err) {
+        console.log('[ZeroRetry Index] PROJECT_SELECTOR_ERROR:', err);
+      }
+    }
   }
 }
 
@@ -1370,31 +1443,38 @@ function switchTab(tab: SidebarTab): void {
 
   const tocTab = document.getElementById(SIDEBAR_TOC_TAB_ID);
   const savedTab = document.getElementById(SIDEBAR_SAVED_TAB_ID);
+  const projectsTab = document.getElementById(SIDEBAR_PROJECTS_TAB_ID);
   const toc = document.getElementById(SIDEBAR_TOC_ID);
   const savedPanel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
+  const projectsPanel = document.getElementById(SIDEBAR_PROJECTS_PANEL_ID);
   const loading = document.getElementById(SIDEBAR_LOADING_ID);
   const empty = document.getElementById(SIDEBAR_EMPTY_ID);
   const searchContainer = document.getElementById('zeroretry-search-container');
 
+  // Style all tabs
+  if (tocTab) styleTab(tocTab, tab === 'index');
+  if (savedTab) styleTab(savedTab, tab === 'saved');
+  if (projectsTab) styleTab(projectsTab, tab === 'projects');
+
+  // Hide all panels first
+  if (toc) toc.style.display = 'none';
+  if (savedPanel) savedPanel.style.display = 'none';
+  if (projectsPanel) projectsPanel.style.display = 'none';
+  if (searchContainer) searchContainer.style.display = 'none';
+  if (loading) loading.style.display = 'none';
+  if (empty) empty.style.display = 'none';
+
   if (tab === 'index') {
-    if (tocTab) styleTab(tocTab, true);
-    if (savedTab) styleTab(savedTab, false);
     if (toc) toc.style.display = 'block';
-    if (savedPanel) savedPanel.style.display = 'none';
     if (searchContainer) searchContainer.style.display = 'block';
-    // Show loading/empty if applicable (handled by refreshTOC)
-  } else {
-    if (tocTab) styleTab(tocTab, false);
-    if (savedTab) styleTab(savedTab, true);
-    if (toc) toc.style.display = 'none';
+  } else if (tab === 'saved') {
     if (savedPanel) savedPanel.style.display = 'block';
-    if (searchContainer) searchContainer.style.display = 'none';
-    if (loading) loading.style.display = 'none';
-    if (empty) empty.style.display = 'none';
-    // Render saved panel
     if (currentSession) {
       renderSavedPanel(currentSession);
     }
+  } else if (tab === 'projects') {
+    if (projectsPanel) projectsPanel.style.display = 'flex';
+    renderProjectsPanel();
   }
 }
 
@@ -1470,6 +1550,90 @@ function renderSavedPanel(session: Session): void {
     });
     panel.appendChild(itemElement);
   });
+}
+
+// Track which project detail is being viewed (null = list view)
+let activeProjectId: string | null = null;
+
+/**
+ * Renders the projects panel content
+ */
+async function renderProjectsPanel(): Promise<void> {
+  const panel = document.getElementById(SIDEBAR_PROJECTS_PANEL_ID);
+  if (!panel) return;
+
+  panel.innerHTML = '';
+  const t = themes[currentTheme];
+
+  try {
+    const projects = await loadProjects();
+
+    if (activeProjectId) {
+      // Detail view
+      const project = projects.find(p => p.id === activeProjectId);
+      if (!project) {
+        activeProjectId = null;
+        renderProjectsPanel();
+        return;
+      }
+
+      const items = await getSavedItemsForProject(activeProjectId);
+      const detailEl = renderProjectDetail(
+        project,
+        items,
+        t,
+        () => { activeProjectId = null; renderProjectsPanel(); },
+        async () => {
+          await deleteProjectFromStorage(activeProjectId!);
+          activeProjectId = null;
+          renderProjectsPanel();
+        },
+        (item) => {
+          // Navigate to item's conversation
+          const url = new URL(window.location.href);
+          const adapter = getAdapterForUrl(url);
+          if (adapter && item.anchor?.messageId) {
+            adapter.scrollToMessage(item.anchor.messageId);
+          }
+        }
+      );
+      panel.appendChild(detailEl);
+    } else {
+      // List view
+      const itemCounts = new Map<string, number>();
+      for (const project of projects) {
+        const items = await getSavedItemsForProject(project.id);
+        itemCounts.set(project.id, items.length);
+      }
+
+      const listEl = renderProjectsList(
+        projects,
+        itemCounts,
+        t,
+        (projectId) => { activeProjectId = projectId; renderProjectsPanel(); },
+        async () => {
+          const name = prompt('Project name:');
+          if (!name) return;
+          const desc = prompt('Description (optional):') || undefined;
+          const project = createProject(name, desc);
+          await addProjectToStorage(project);
+          renderProjectsPanel();
+        }
+      );
+      panel.appendChild(listEl);
+    }
+  } catch (err) {
+    console.log('[ZeroRetry Index] PROJECTS_PANEL_ERROR:', err);
+    const errorMsg = document.createElement('div');
+    errorMsg.textContent = 'Failed to load projects';
+    Object.assign(errorMsg.style, {
+      padding: '24px 16px',
+      textAlign: 'center',
+      color: t.textMuted,
+      fontSize: '14px'
+    });
+    panel.appendChild(errorMsg);
+  }
 }
 
 /**

@@ -5,10 +5,12 @@
 
 import type { Bookmark, BookmarkAnchor } from './bookmarks';
 import type { SavedItem } from './savedItem';
+import type { Project } from './project';
 import type { ChatPlatformId } from '../adapters/base';
 
 const BOOKMARKS_KEY = 'zeroretry:bookmarks';
 const SAVED_ITEMS_KEY = 'zeroretry:savedItems';
+const PROJECTS_KEY = 'zeroretry:projects';
 const MIGRATION_KEY = 'zeroretry:migrationVersion';
 
 const CURRENT_MIGRATION_VERSION = 1;
@@ -363,4 +365,103 @@ export async function removeSavedItemByMessageId(
   }
 
   return false;
+}
+
+// ============================================================================
+// Project Storage
+// ============================================================================
+
+/**
+ * Loads all projects from storage
+ */
+export async function loadProjects(): Promise<Project[]> {
+  if (!isExtensionContextValid()) return [];
+
+  try {
+    const result = await chrome.storage.local.get(PROJECTS_KEY);
+    return (result[PROJECTS_KEY] as Project[] | undefined) || [];
+  } catch (error) {
+    handleStorageError(error, 'Load projects');
+    return [];
+  }
+}
+
+/**
+ * Saves all projects to storage
+ */
+export async function saveProjects(projects: Project[]): Promise<void> {
+  if (!isExtensionContextValid()) return;
+
+  try {
+    await chrome.storage.local.set({ [PROJECTS_KEY]: projects });
+  } catch (error) {
+    handleStorageError(error, 'Save projects');
+  }
+}
+
+/**
+ * Adds a new project
+ */
+export async function addProject(project: Project): Promise<void> {
+  const all = await loadProjects();
+  all.push(project);
+  await saveProjects(all);
+}
+
+/**
+ * Updates a project by ID
+ */
+export async function updateProject(
+  id: string,
+  updates: Partial<Omit<Project, 'id'>>
+): Promise<void> {
+  const all = await loadProjects();
+  const idx = all.findIndex(p => p.id === id);
+
+  if (idx !== -1) {
+    all[idx] = { ...all[idx], ...updates, modifiedAt: Date.now() };
+    await saveProjects(all);
+  }
+}
+
+/**
+ * Deletes a project and unassigns all its items
+ */
+export async function deleteProject(id: string): Promise<void> {
+  // Remove the project
+  const allProjects = await loadProjects();
+  await saveProjects(allProjects.filter(p => p.id !== id));
+
+  // Unassign items from this project
+  const allItems = await loadSavedItems();
+  let changed = false;
+  allItems.forEach(item => {
+    if (item.projectId === id) {
+      item.projectId = undefined;
+      changed = true;
+    }
+  });
+  if (changed) {
+    await saveSavedItems(allItems);
+  }
+}
+
+/**
+ * Assigns a saved item to a project
+ */
+export async function assignItemToProject(
+  itemId: string,
+  projectId: string | undefined
+): Promise<void> {
+  await updateSavedItem(itemId, { projectId } as any);
+}
+
+/**
+ * Gets saved items for a specific project
+ */
+export async function getSavedItemsForProject(
+  projectId: string
+): Promise<SavedItem[]> {
+  const all = await loadSavedItems();
+  return all.filter(i => i.projectId === projectId);
 }
