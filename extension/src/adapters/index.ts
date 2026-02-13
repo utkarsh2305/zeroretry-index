@@ -13,6 +13,7 @@ import { perplexityAdapter } from './perplexity';
 import { grokAdapter } from './grok';
 import { geminiAdapter } from './gemini';
 import { copilotAdapter } from './copilot';
+import { lovableAdapter } from './lovable';
 
 /**
  * All available adapters
@@ -23,7 +24,8 @@ const adapters: ChatAdapter[] = [
   perplexityAdapter,
   grokAdapter,
   geminiAdapter,
-  copilotAdapter
+  copilotAdapter,
+  lovableAdapter
 ];
 
 /**

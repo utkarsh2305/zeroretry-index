@@ -1286,7 +1286,7 @@ async function resolveAndCacheBookmarks(
         .map((item: ResolvedSavedItem) => item.anchor.messageId)
     );
 
-    log('Saved items resolved:', session.savedItems.length, 'total,', session.savedMessageIds.size, 'active');
+    console.log('[ZeroRetry Index] BOOT_RESOLVE: raw=' + rawSavedItems.length, 'resolved=' + session.savedItems.length, 'active=' + session.savedMessageIds.size);
   }
 }
 
@@ -1299,7 +1299,10 @@ async function toggleSave(
   session: Session,
   saveBtn: HTMLElement
 ): Promise<void> {
-  if (!session.conversationKey || !session.platformId) return;
+  if (!session.conversationKey || !session.platformId) {
+    console.log('[ZeroRetry Index] TOGGLE_SAVE: SKIPPED - no convKey or platformId');
+    return;
+  }
 
   const isSaved = session.savedMessageIds.has(msg.messageId);
 
@@ -1318,7 +1321,7 @@ async function toggleSave(
       saveBtn.innerHTML = '☆';
       saveBtn.style.color = '#9ca3af';
       saveBtn.title = 'Save';
-      log('Saved item removed for message:', msg.messageId);
+      console.log('[ZeroRetry Index] UNSAVED:', msg.messageId, 'remaining:', session.savedItems.length);
     }
   } else {
     // Add saved item
@@ -1335,7 +1338,7 @@ async function toggleSave(
     saveBtn.innerHTML = '★';
     saveBtn.style.color = '#f59e0b';
     saveBtn.title = 'Remove';
-    log('Saved item added for message:', msg.messageId);
+    console.log('[ZeroRetry Index] SAVED:', msg.messageId, 'convKey:', session.conversationKey, 'total:', session.savedItems.length);
   }
 }
 
@@ -1362,6 +1365,7 @@ function styleTab(tab: HTMLElement, isActive: boolean): void {
  * Switches between Index and Saved tabs
  */
 function switchTab(tab: SidebarTab): void {
+  console.log('[ZeroRetry Index] SWITCH_TAB:', tab, 'session?', !!currentSession, 'items:', currentSession?.savedItems.length);
   activeTab = tab;
 
   const tocTab = document.getElementById(SIDEBAR_TOC_TAB_ID);
@@ -1406,8 +1410,25 @@ function renderSavedPanel(session: Session): void {
 
   // Only show items from current conversation
   const items = session.savedItems;
+  console.log('[ZeroRetry Index] RENDER_SAVED: items=' + items.length, 'convKey:', session.conversationKey, 'v:', session.version);
 
   if (items.length === 0) {
+    // Fallback: try loading from storage in case in-memory state was lost
+    if (session.conversationKey) {
+      getSavedItemsForConversation(session.conversationKey).then(stored => {
+        console.log('[ZeroRetry Index] STORAGE_FALLBACK: found=' + stored.length);
+        if (stored.length > 0) {
+          session.savedItems = stored.map(item => ({
+            ...item,
+            status: 'active' as const,
+            resolvedMessageId: item.anchor.messageId
+          }));
+          session.savedMessageIds = new Set(stored.map(i => i.anchor.messageId));
+          renderSavedPanel(session); // Re-render with loaded items
+        }
+      });
+    }
+
     const emptyMsg = document.createElement('div');
     emptyMsg.className = 'zeroretry-saved-empty';
     emptyMsg.textContent = 'No saved items in this conversation';
@@ -1538,6 +1559,8 @@ function isExtensionContextValid(): boolean {
  * Initialize the extension
  */
 function init(): void {
+  console.log('[ZeroRetry Index] Build: 2026-02-13-fix1');
+
   // Exit early if extension context is invalid (extension was reloaded)
   if (!isExtensionContextValid()) {
     console.warn('[ZeroRetry Index] Extension was reloaded. Please refresh the page.');
@@ -1601,7 +1624,7 @@ function startNewSession(adapter: NonNullable<ReturnType<typeof getAdapterForUrl
   const newSession = createSession(conversationId, currentSessionVersion, adapter.id);
   currentSession = newSession;
 
-  log('Starting session', newSession.version, 'for conversation', conversationId);
+  console.log('[ZeroRetry Index] NEW_SESSION: v=' + newSession.version, 'convId:', conversationId, 'key:', newSession.conversationKey);
 
   // Reset UI to loading
   resetUIToLoading();

@@ -16,7 +16,8 @@
         "https://www.perplexity.ai/*",
         "https://x.com/i/grok*",
         "https://gemini.google.com/*",
-        "https://copilot.microsoft.com/*"
+        "https://copilot.microsoft.com/*",
+        "https://lovable.dev/*"
       ],
       "js": ["dist/contentScript.js"],
       "run_at": "document_idle"
