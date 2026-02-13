@@ -7,7 +7,7 @@ import type { ResolvedSavedItem, ContinuationContext } from '../core/savedItem';
 import { PLATFORM_INFO, generateDefaultContinuation, getAvailableTargets } from '../core/savedItem';
 import type { ChatPlatformId } from '../adapters/base';
 import { performHandoff } from '../core/handoff';
-import { updateSavedItem } from '../core/storage';
+import { updateSavedItem, setMilestone } from '../core/storage';
 import { showToast } from './toast';
 
 /**
@@ -335,6 +335,82 @@ function createExpandedView(
   ));
 
   view.appendChild(fieldsContainer);
+
+  // Milestone toggle
+  const milestoneRow = document.createElement('div');
+  Object.assign(milestoneRow.style, {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+    marginBottom: '12px',
+    padding: '8px',
+    backgroundColor: '#f3f4f6',
+    borderRadius: '4px'
+  });
+
+  const milestoneCheckbox = document.createElement('input');
+  milestoneCheckbox.type = 'checkbox';
+  milestoneCheckbox.checked = !!item.milestone;
+  milestoneCheckbox.style.cursor = 'pointer';
+
+  const milestoneLabel = document.createElement('span');
+  milestoneLabel.textContent = 'Milestone';
+  Object.assign(milestoneLabel.style, {
+    fontSize: '12px',
+    fontWeight: '500',
+    color: '#374151',
+    cursor: 'pointer'
+  });
+  milestoneLabel.addEventListener('click', () => {
+    milestoneCheckbox.checked = !milestoneCheckbox.checked;
+    milestoneCheckbox.dispatchEvent(new Event('change'));
+  });
+
+  const milestoneLabelInput = document.createElement('input');
+  milestoneLabelInput.type = 'text';
+  milestoneLabelInput.placeholder = 'Label...';
+  milestoneLabelInput.value = item.milestone?.label || '';
+  Object.assign(milestoneLabelInput.style, {
+    flex: '1',
+    padding: '4px 6px',
+    fontSize: '12px',
+    border: '1px solid #d1d5db',
+    borderRadius: '3px',
+    backgroundColor: '#ffffff',
+    color: '#111827',
+    display: item.milestone ? 'block' : 'none',
+    boxSizing: 'border-box'
+  });
+
+  milestoneCheckbox.addEventListener('change', async () => {
+    if (milestoneCheckbox.checked) {
+      milestoneLabelInput.style.display = 'block';
+      const label = milestoneLabelInput.value || item.label || 'Milestone';
+      await setMilestone(item.id, { label, order: item.createdAt });
+      item.milestone = { label, order: item.createdAt };
+    } else {
+      milestoneLabelInput.style.display = 'none';
+      await setMilestone(item.id, undefined);
+      item.milestone = undefined;
+    }
+    onUpdate();
+  });
+
+  milestoneLabelInput.addEventListener('blur', async () => {
+    if (milestoneCheckbox.checked && milestoneLabelInput.value) {
+      await setMilestone(item.id, { label: milestoneLabelInput.value, order: item.milestone?.order || item.createdAt });
+      item.milestone = { label: milestoneLabelInput.value, order: item.milestone?.order || item.createdAt };
+      onUpdate();
+    }
+  });
+  milestoneLabelInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') milestoneLabelInput.blur();
+  });
+
+  milestoneRow.appendChild(milestoneCheckbox);
+  milestoneRow.appendChild(milestoneLabel);
+  milestoneRow.appendChild(milestoneLabelInput);
+  view.appendChild(milestoneRow);
 
   // Continue buttons
   const buttonsContainer = createContinueButtons(item, currentPlatform, continuation);

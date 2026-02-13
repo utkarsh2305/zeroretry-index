@@ -274,6 +274,94 @@ export function renderProjectDetail(
     container.appendChild(desc);
   }
 
+  // Timeline strip (milestones)
+  const milestoneItems = items
+    .filter(i => i.milestone)
+    .sort((a, b) => (a.milestone!.order) - (b.milestone!.order));
+
+  if (milestoneItems.length > 0) {
+    const timeline = document.createElement('div');
+    Object.assign(timeline.style, {
+      padding: '12px',
+      borderBottom: `1px solid ${theme.headerBorder}`,
+      overflowX: 'auto',
+      flexShrink: '0'
+    });
+
+    const track = document.createElement('div');
+    Object.assign(track.style, {
+      display: 'flex',
+      alignItems: 'center',
+      minWidth: 'max-content',
+      gap: '0'
+    });
+
+    milestoneItems.forEach((mi, idx) => {
+      // Node
+      const node = document.createElement('div');
+      Object.assign(node.style, {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        cursor: 'pointer',
+        flexShrink: '0'
+      });
+
+      const circle = document.createElement('div');
+      Object.assign(circle.style, {
+        width: '12px',
+        height: '12px',
+        borderRadius: '50%',
+        backgroundColor: theme.tabActiveBorder,
+        border: `2px solid ${theme.tabActiveBorder}`,
+        flexShrink: '0'
+      });
+
+      const label = document.createElement('div');
+      label.textContent = mi.milestone!.label;
+      Object.assign(label.style, {
+        fontSize: '10px',
+        color: theme.textSecondary,
+        marginTop: '4px',
+        maxWidth: '80px',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        textAlign: 'center'
+      });
+
+      node.appendChild(circle);
+      node.appendChild(label);
+      node.addEventListener('click', () => onClickItem(mi));
+
+      node.addEventListener('mouseenter', () => {
+        circle.style.transform = 'scale(1.3)';
+        circle.style.transition = 'transform 0.15s';
+      });
+      node.addEventListener('mouseleave', () => {
+        circle.style.transform = 'scale(1)';
+      });
+
+      track.appendChild(node);
+
+      // Connector line (except after last)
+      if (idx < milestoneItems.length - 1) {
+        const line = document.createElement('div');
+        Object.assign(line.style, {
+          width: '32px',
+          height: '2px',
+          backgroundColor: theme.tabActiveBorder,
+          flexShrink: '0',
+          marginBottom: '18px' // align with circles, not labels
+        });
+        track.appendChild(line);
+      }
+    });
+
+    timeline.appendChild(track);
+    container.appendChild(timeline);
+  }
+
   // Items list
   const list = document.createElement('div');
   Object.assign(list.style, {

@@ -56,6 +56,8 @@ export interface SavedItem {
   modifiedAt?: number;
   /** Optional project assignment */
   projectId?: string;
+  /** Optional milestone marker */
+  milestone?: { label: string; order: number };
   /** Schema version for future migrations */
   schemaVersion: 1;
 }

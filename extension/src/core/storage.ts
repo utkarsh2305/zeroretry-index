@@ -465,3 +465,30 @@ export async function getSavedItemsForProject(
   const all = await loadSavedItems();
   return all.filter(i => i.projectId === projectId);
 }
+
+/**
+ * Sets or clears the milestone on a saved item
+ */
+export async function setMilestone(
+  itemId: string,
+  milestone: { label: string; order: number } | undefined
+): Promise<void> {
+  if (!isExtensionContextValid()) return;
+  try {
+    await updateSavedItem(itemId, { milestone });
+  } catch (err) {
+    console.log('[ZeroRetry Index] setMilestone error:', err);
+  }
+}
+
+/**
+ * Gets all milestone-marked items for a project, sorted by order
+ */
+export async function getMilestonesForProject(
+  projectId: string
+): Promise<SavedItem[]> {
+  const items = await getSavedItemsForProject(projectId);
+  return items
+    .filter(i => i.milestone)
+    .sort((a, b) => (a.milestone!.order) - (b.milestone!.order));
+}

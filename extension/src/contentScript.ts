@@ -657,8 +657,24 @@ function refreshTOC(
           bookmarkBtn.style.color = stillBookmarked ? t.bookmarkActive : t.bookmarkInactive;
         });
 
-        item.appendChild(label);
-        item.appendChild(bookmarkBtn);
+        // Milestone flag (if this message has a milestone marker)
+        const savedItem = session?.savedItems.find(si => si.anchor.messageId === msg.messageId);
+        if (savedItem && savedItem.milestone) {
+          const flag = document.createElement('span');
+          flag.textContent = '\u2691'; // ⚑
+          flag.title = `Milestone: ${savedItem.milestone.label}`;
+          Object.assign(flag.style, {
+            fontSize: '12px',
+            color: t.tabActiveBorder,
+            flexShrink: '0'
+          });
+          item.appendChild(label);
+          item.appendChild(flag);
+          item.appendChild(bookmarkBtn);
+        } else {
+          item.appendChild(label);
+          item.appendChild(bookmarkBtn);
+        }
 
         // Hover effect for item
         item.addEventListener('mouseenter', () => {
