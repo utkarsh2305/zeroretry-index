@@ -40,7 +40,7 @@ export function renderProjectsList(
   itemCounts: Map<string, number>,
   theme: ThemeColors,
   onSelectProject: (projectId: string) => void,
-  onCreateProject: () => void
+  onCreateProject: (name: string, description?: string) => Promise<void>
 ): HTMLElement {
   const container = document.createElement('div');
   Object.assign(container.style, {
@@ -80,11 +80,118 @@ export function renderProjectsList(
     borderRadius: '4px',
     cursor: 'pointer'
   });
-  newBtn.addEventListener('click', onCreateProject);
 
   header.appendChild(title);
   header.appendChild(newBtn);
   container.appendChild(header);
+
+  // Inline create form (hidden by default)
+  const formContainer = document.createElement('div');
+  Object.assign(formContainer.style, {
+    display: 'none',
+    padding: '12px',
+    borderBottom: `1px solid ${theme.headerBorder}`,
+    flexShrink: '0'
+  });
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Project name';
+  Object.assign(nameInput.style, {
+    width: '100%',
+    padding: '6px 8px',
+    fontSize: '13px',
+    border: `1px solid ${theme.itemBorder}`,
+    borderRadius: '4px',
+    backgroundColor: theme.panelBg,
+    color: theme.text,
+    boxSizing: 'border-box',
+    marginBottom: '6px'
+  });
+
+  const descInput = document.createElement('input');
+  descInput.type = 'text';
+  descInput.placeholder = 'Description (optional)';
+  Object.assign(descInput.style, {
+    width: '100%',
+    padding: '6px 8px',
+    fontSize: '12px',
+    border: `1px solid ${theme.itemBorder}`,
+    borderRadius: '4px',
+    backgroundColor: theme.panelBg,
+    color: theme.text,
+    boxSizing: 'border-box',
+    marginBottom: '8px'
+  });
+
+  const formButtons = document.createElement('div');
+  Object.assign(formButtons.style, {
+    display: 'flex',
+    gap: '6px',
+    justifyContent: 'flex-end'
+  });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  Object.assign(cancelBtn.style, {
+    padding: '4px 10px',
+    fontSize: '12px',
+    color: theme.textSecondary,
+    backgroundColor: 'transparent',
+    border: `1px solid ${theme.itemBorder}`,
+    borderRadius: '4px',
+    cursor: 'pointer'
+  });
+
+  const createBtn = document.createElement('button');
+  createBtn.textContent = 'Create';
+  Object.assign(createBtn.style, {
+    padding: '4px 10px',
+    fontSize: '12px',
+    fontWeight: '500',
+    color: theme.buttonText,
+    backgroundColor: theme.tabActiveBorder,
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer'
+  });
+
+  const hideForm = () => {
+    formContainer.style.display = 'none';
+    nameInput.value = '';
+    descInput.value = '';
+  };
+
+  const submitForm = async () => {
+    const name = nameInput.value.trim();
+    if (!name) { nameInput.focus(); return; }
+    const desc = descInput.value.trim() || undefined;
+    createBtn.disabled = true;
+    await onCreateProject(name, desc);
+    hideForm();
+  };
+
+  newBtn.addEventListener('click', () => {
+    formContainer.style.display = 'block';
+    nameInput.focus();
+  });
+  cancelBtn.addEventListener('click', hideForm);
+  createBtn.addEventListener('click', submitForm);
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitForm(); }
+    if (e.key === 'Escape') hideForm();
+  });
+  descInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitForm(); }
+    if (e.key === 'Escape') hideForm();
+  });
+
+  formButtons.appendChild(cancelBtn);
+  formButtons.appendChild(createBtn);
+  formContainer.appendChild(nameInput);
+  formContainer.appendChild(descInput);
+  formContainer.appendChild(formButtons);
+  container.appendChild(formContainer);
 
   // Projects list
   const list = document.createElement('div');

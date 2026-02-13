@@ -7,9 +7,10 @@ import type { ResolvedSavedItem, ContinuationContext } from '../core/savedItem';
 import { PLATFORM_INFO, generateDefaultContinuation, getAvailableTargets } from '../core/savedItem';
 import type { ChatPlatformId } from '../adapters/base';
 import { performHandoff } from '../core/handoff';
-import { updateSavedItem, setMilestone } from '../core/storage';
+import { updateSavedItem, setMilestone, assignItemToProject } from '../core/storage';
 import { showToast } from './toast';
 import { renderTagPills, renderTagSelector } from './tagChips';
+import type { Project } from '../core/project';
 
 /**
  * Callbacks for saved item interactions
@@ -26,7 +27,8 @@ export interface SavedItemCallbacks {
 export function renderSavedItem(
   item: ResolvedSavedItem,
   currentPlatform: ChatPlatformId,
-  callbacks: SavedItemCallbacks
+  callbacks: SavedItemCallbacks,
+  projects: Project[] = []
 ): HTMLElement {
   const container = document.createElement('div');
   container.className = 'zeroretry-saved-item';
@@ -39,7 +41,7 @@ export function renderSavedItem(
   const collapsedView = createCollapsedView(item, () => {
     isExpanded = !isExpanded;
     updateView();
-  }, callbacks);
+  }, callbacks, projects);
 
   // Expanded view (continuation editor)
   const expandedView = createExpandedView(
@@ -49,7 +51,8 @@ export function renderSavedItem(
       isExpanded = false;
       updateView();
     },
-    callbacks.onUpdate
+    callbacks.onUpdate,
+    projects
   );
 
   function updateView() {
@@ -76,7 +79,8 @@ export function renderSavedItem(
 function createCollapsedView(
   item: ResolvedSavedItem,
   onExpand: () => void,
-  callbacks: SavedItemCallbacks
+  callbacks: SavedItemCallbacks,
+  projects: Project[]
 ): HTMLElement {
   const view = document.createElement('div');
   view.className = 'zeroretry-saved-collapsed';
@@ -157,6 +161,31 @@ function createCollapsedView(
   if (item.tags && item.tags.length > 0) {
     const tagPills = renderTagPills(item.tags, 'light');
     content.appendChild(tagPills);
+  }
+
+  // Project badge
+  if (item.projectId) {
+    const proj = projects.find(p => p.id === item.projectId);
+    if (proj) {
+      const badge = document.createElement('span');
+      badge.textContent = proj.name;
+      Object.assign(badge.style, {
+        display: 'inline-block',
+        padding: '2px 8px',
+        fontSize: '10px',
+        fontWeight: '500',
+        borderRadius: '10px',
+        backgroundColor: '#f3f4f6',
+        color: '#6b7280',
+        border: '1px solid #d1d5db',
+        marginTop: '4px',
+        maxWidth: '150px',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap'
+      });
+      content.appendChild(badge);
+    }
   }
 
   // Expand button
@@ -247,7 +276,8 @@ function createExpandedView(
   item: ResolvedSavedItem,
   currentPlatform: ChatPlatformId,
   onCollapse: () => void,
-  onUpdate: () => void
+  onUpdate: () => void,
+  projects: Project[]
 ): HTMLElement {
   const view = document.createElement('div');
   view.className = 'zeroretry-saved-expanded';
@@ -418,6 +448,68 @@ function createExpandedView(
   milestoneRow.appendChild(milestoneLabel);
   milestoneRow.appendChild(milestoneLabelInput);
   view.appendChild(milestoneRow);
+
+  // Project assignment dropdown
+  if (projects.length > 0) {
+    const projectRow = document.createElement('div');
+    Object.assign(projectRow.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '12px',
+      padding: '8px',
+      backgroundColor: '#f3f4f6',
+      borderRadius: '4px'
+    });
+
+    const projectLabel = document.createElement('span');
+    projectLabel.textContent = 'Project';
+    Object.assign(projectLabel.style, {
+      fontSize: '12px',
+      fontWeight: '500',
+      color: '#374151',
+      flexShrink: '0'
+    });
+
+    const projectSelect = document.createElement('select');
+    Object.assign(projectSelect.style, {
+      flex: '1',
+      padding: '4px 6px',
+      fontSize: '12px',
+      border: '1px solid #d1d5db',
+      borderRadius: '3px',
+      backgroundColor: '#ffffff',
+      color: '#111827',
+      boxSizing: 'border-box',
+      cursor: 'pointer'
+    });
+
+    // "None" option
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = 'None';
+    projectSelect.appendChild(noneOpt);
+
+    // Project options
+    projects.forEach(proj => {
+      const opt = document.createElement('option');
+      opt.value = proj.id;
+      opt.textContent = proj.name;
+      if (item.projectId === proj.id) opt.selected = true;
+      projectSelect.appendChild(opt);
+    });
+
+    projectSelect.addEventListener('change', async () => {
+      const newProjectId = projectSelect.value || undefined;
+      item.projectId = newProjectId;
+      await assignItemToProject(item.id, newProjectId);
+      onUpdate();
+    });
+
+    projectRow.appendChild(projectLabel);
+    projectRow.appendChild(projectSelect);
+    view.appendChild(projectRow);
+  }
 
   // Tag selector
   const tagSelector = renderTagSelector(

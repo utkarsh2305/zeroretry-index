@@ -9,7 +9,8 @@ import type { ResolvedSavedItem } from './core/savedItem';
 import {
   createSavedItem,
   resolveSavedItems,
-  PLATFORM_INFO
+  PLATFORM_INFO,
+  getConversationUrl
 } from './core/savedItem';
 import {
   getSavedItemsForConversation,
@@ -1414,10 +1415,10 @@ async function toggleSave(
               }
             },
             async () => {
-              const name = prompt('Project name:');
+              // Inline form will be shown by projectSelector
+              const name = await showInlineNamePrompt(sidebarBody, themes[currentTheme]);
               if (!name) return;
-              const desc = prompt('Description (optional):') || undefined;
-              const project = createProject(name, desc);
+              const project = createProject(name);
               await addProjectToStorage(project);
               await assignItemToProject(savedItem.id, project.id);
               console.log('[ZeroRetry Index] CREATED+ASSIGNED project:', project.id);
@@ -1497,12 +1498,16 @@ function switchTab(tab: SidebarTab): void {
 /**
  * Renders the saved panel content - shows only current conversation's saved items
  */
-function renderSavedPanel(session: Session): void {
+async function renderSavedPanel(session: Session): Promise<void> {
   const panel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
   if (!panel) return;
 
   panel.innerHTML = '';
   const t = themes[currentTheme];
+
+  // Load projects for assignment UI
+  let projects: Awaited<ReturnType<typeof loadProjects>> = [];
+  try { projects = await loadProjects(); } catch { /* ignore */ }
 
   // Only show items from current conversation
   const items = session.savedItems;
@@ -1563,13 +1568,117 @@ function renderSavedPanel(session: Session): void {
       scrollToMessage: (messageId: string) => {
         return adapter ? adapter.scrollToMessage(messageId) : false;
       }
-    });
+    }, projects);
     panel.appendChild(itemElement);
   });
 }
 
 // Track which project detail is being viewed (null = list view)
 let activeProjectId: string | null = null;
+
+/**
+ * Shows an inline name input inside the sidebar and returns the entered value
+ */
+function showInlineNamePrompt(
+  container: HTMLElement,
+  theme: typeof themes.light
+): Promise<string | null> {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    Object.assign(overlay.style, {
+      position: 'absolute',
+      top: '0', left: '0', right: '0', bottom: '0',
+      backgroundColor: 'rgba(0,0,0,0.3)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: '10000',
+      padding: '16px',
+      boxSizing: 'border-box'
+    });
+
+    const card = document.createElement('div');
+    Object.assign(card.style, {
+      backgroundColor: theme.panelBg,
+      border: `1px solid ${theme.panelBorder}`,
+      borderRadius: '8px',
+      padding: '16px',
+      width: '100%',
+      maxWidth: '280px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+    });
+
+    const label = document.createElement('div');
+    label.textContent = 'Project name';
+    Object.assign(label.style, {
+      fontSize: '13px',
+      fontWeight: '600',
+      color: theme.text,
+      marginBottom: '8px'
+    });
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Enter name...';
+    Object.assign(input.style, {
+      width: '100%',
+      padding: '6px 8px',
+      fontSize: '13px',
+      border: `1px solid ${theme.itemBorder || theme.panelBorder}`,
+      borderRadius: '4px',
+      backgroundColor: theme.panelBg,
+      color: theme.text,
+      boxSizing: 'border-box',
+      marginBottom: '10px'
+    });
+
+    const btns = document.createElement('div');
+    Object.assign(btns.style, { display: 'flex', gap: '6px', justifyContent: 'flex-end' });
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    Object.assign(cancelBtn.style, {
+      padding: '4px 10px', fontSize: '12px',
+      color: theme.textSecondary || theme.text,
+      backgroundColor: 'transparent',
+      border: `1px solid ${theme.itemBorder || theme.panelBorder}`,
+      borderRadius: '4px', cursor: 'pointer'
+    });
+
+    const okBtn = document.createElement('button');
+    okBtn.textContent = 'Create';
+    Object.assign(okBtn.style, {
+      padding: '4px 10px', fontSize: '12px', fontWeight: '500',
+      color: theme.buttonText || '#fff',
+      backgroundColor: theme.tabActiveBorder,
+      border: 'none', borderRadius: '4px', cursor: 'pointer'
+    });
+
+    const cleanup = (value: string | null) => {
+      overlay.remove();
+      resolve(value);
+    };
+
+    cancelBtn.addEventListener('click', () => cleanup(null));
+    okBtn.addEventListener('click', () => {
+      const val = input.value.trim();
+      cleanup(val || null);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); const val = input.value.trim(); cleanup(val || null); }
+      if (e.key === 'Escape') cleanup(null);
+    });
+
+    btns.appendChild(cancelBtn);
+    btns.appendChild(okBtn);
+    card.appendChild(label);
+    card.appendChild(input);
+    card.appendChild(btns);
+    overlay.appendChild(card);
+    container.appendChild(overlay);
+    input.focus();
+  });
+}
 
 /**
  * Renders the projects panel content
@@ -1608,8 +1717,19 @@ async function renderProjectsPanel(): Promise<void> {
           // Navigate to item's conversation
           const url = new URL(window.location.href);
           const adapter = getAdapterForUrl(url);
-          if (adapter && item.anchor?.messageId) {
-            adapter.scrollToMessage(item.anchor.messageId);
+          const currentPlatform = adapter?.id;
+          const itemPlatform = item.sourcePlatform;
+
+          // Same platform + same conversation → scroll in place
+          if (adapter && currentPlatform === itemPlatform && item.anchor?.messageId) {
+            const scrolled = adapter.scrollToMessage(item.anchor.messageId);
+            if (scrolled) return;
+          }
+
+          // Cross-platform or different conversation → open in new tab
+          if (itemPlatform && item.conversationKey) {
+            const targetUrl = getConversationUrl(itemPlatform, item.conversationKey);
+            window.open(targetUrl, '_blank');
           }
         }
       );
@@ -1627,11 +1747,8 @@ async function renderProjectsPanel(): Promise<void> {
         itemCounts,
         t,
         (projectId) => { activeProjectId = projectId; renderProjectsPanel(); },
-        async () => {
-          const name = prompt('Project name:');
-          if (!name) return;
-          const desc = prompt('Description (optional):') || undefined;
-          const project = createProject(name, desc);
+        async (name: string, description?: string) => {
+          const project = createProject(name, description);
           await addProjectToStorage(project);
           renderProjectsPanel();
         }

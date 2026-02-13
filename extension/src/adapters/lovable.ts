@@ -18,6 +18,8 @@ const CONTENT_SELECTOR = '[class*="PromptBox_customProse"], .prose';
 const CHAT_PANEL_SELECTOR = '[data-chat-panel="true"]';
 /** AI message IDs start with this prefix */
 const AI_MESSAGE_PREFIX = 'aimsg_';
+/** Pattern matching Lovable's timestamp dividers, e.g. "11 Feb at 14:03" */
+const TIMESTAMP_PATTERN = /^\d{1,2}\s+\w{3,9}\s+at\s+\d{1,2}:\d{2}$/;
 
 /**
  * Lovable adapter implementation
@@ -75,7 +77,15 @@ class LovableAdapter implements ChatAdapter {
     const allMessages = this.findMessageElements();
 
     allMessages.forEach(msg => {
-      const text = this.extractMessageText(msg.element);
+      let text = this.extractMessageText(msg.element);
+
+      if (!text) return;
+
+      // Skip pure timestamp dividers (e.g. "11 Feb at 14:03")
+      if (TIMESTAMP_PATTERN.test(text)) return;
+
+      // Strip leading timestamp prefix from real messages
+      text = text.replace(/^\d{1,2}\s+\w{3,9}\s+at\s+\d{1,2}:\d{2}\s+/, '');
 
       if (text) {
         messages.push({
