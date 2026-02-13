@@ -1,29 +1,23 @@
 /**
  * Lovable Adapter
  * Implements ChatAdapter interface for Lovable (https://lovable.dev)
+ *
+ * DOM structure (discovered via DevTools):
+ * - Messages: <div data-message-id="aimsg_..." ...> (AI) or <div data-message-id="..." ...> (user)
+ * - Content: child div with class containing "PromptBox_customProse" (CSS modules)
+ * - Chat panel: <div data-chat-panel="true">
  */
 
 import { ChatAdapter, ChatMessage, ChatPlatformId, ChatRole, TitleResult } from './base';
 
-/**
- * DOM selectors for Lovable chat message containers
- * Using multi-selector approach with fallbacks since Lovable's DOM isn't publicly documented
- */
-const USER_SELECTORS = [
-  '[data-role="user"]',
-  '[data-testid="user-message"]',
-  '[data-author="user"]',
-  '.user-message',
-  '[role="user"]'
-];
-
-const ASSISTANT_SELECTORS = [
-  '[data-role="assistant"]',
-  '[data-testid="assistant-message"]',
-  '[data-author="assistant"]',
-  '.assistant-message',
-  '[role="assistant"]'
-];
+/** Selector for all message containers */
+const MESSAGE_SELECTOR = '[data-message-id]';
+/** Selector for message content (CSS modules class with fallback) */
+const CONTENT_SELECTOR = '[class*="PromptBox_customProse"], .prose';
+/** Selector for the chat panel container */
+const CHAT_PANEL_SELECTOR = '[data-chat-panel="true"]';
+/** AI message IDs start with this prefix */
+const AI_MESSAGE_PREFIX = 'aimsg_';
 
 /**
  * Lovable adapter implementation
@@ -35,15 +29,12 @@ class LovableAdapter implements ChatAdapter {
   private titleObserver: MutationObserver | null = null;
   private lastConversationId: string | null = null;
 
-  /**
-   * Checks if the given URL is for Lovable
-   */
   match(url: URL): boolean {
     return url.hostname === 'lovable.dev';
   }
 
   /**
-   * Returns the current conversation/project ID from the URL
+   * Returns the current project ID from the URL
    * URL pattern: https://lovable.dev/projects/<project-id>
    */
   getConversationId(): string | null {
@@ -52,99 +43,46 @@ class LovableAdapter implements ChatAdapter {
   }
 
   /**
-   * Simple hash function for generating stable IDs
-   */
-  private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
-      hash |= 0;
-    }
-    return Math.abs(hash).toString(36);
-  }
-
-  /**
-   * Generates a stable message ID from index and text content
-   */
-  private generateMessageId(index: number, text: string): string {
-    const hash = this.simpleHash(text.substring(0, 50));
-    return `msg-${index}-${hash}`;
-  }
-
-  /**
    * Extracts text content from a message element
+   * Looks for the PromptBox_customProse content div first, then falls back to .prose
    */
   private extractMessageText(element: HTMLElement): string {
-    return (element.innerText ?? '').trim().replace(/\s+/g, ' ');
+    const contentEl = element.querySelector(CONTENT_SELECTOR) as HTMLElement | null;
+    const target = contentEl || element;
+    return (target.innerText ?? '').trim().replace(/\s+/g, ' ');
   }
 
   /**
-   * Tries multiple selectors and returns elements from the first one that works
+   * Finds all message elements in the DOM and determines their role
    */
-  private queryWithFallbacks(selectors: string[]): NodeListOf<Element> | null {
-    for (const selector of selectors) {
-      try {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length > 0) {
-          return elements;
-        }
-      } catch {
-        // Invalid selector, try next
-      }
-    }
-    return null;
-  }
+  private findMessageElements(): Array<{ element: HTMLElement; role: ChatRole; messageId: string }> {
+    const elements = document.querySelectorAll(MESSAGE_SELECTOR);
+    const results: Array<{ element: HTMLElement; role: ChatRole; messageId: string }> = [];
 
-  /**
-   * Finds message elements using primary or fallback selectors
-   */
-  private findMessageElements(): Array<{ element: HTMLElement; role: ChatRole }> {
-    const allMessages: Array<{ element: HTMLElement; role: ChatRole }> = [];
+    elements.forEach(el => {
+      const msgId = el.getAttribute('data-message-id');
+      if (!msgId) return;
 
-    const userElements = this.queryWithFallbacks(USER_SELECTORS);
-    const assistantElements = this.queryWithFallbacks(ASSISTANT_SELECTORS);
-
-    if (userElements) {
-      userElements.forEach((el) => {
-        allMessages.push({ element: el as HTMLElement, role: 'user' });
-      });
-    }
-
-    if (assistantElements) {
-      assistantElements.forEach((el) => {
-        allMessages.push({ element: el as HTMLElement, role: 'assistant' });
-      });
-    }
-
-    // Sort by document position to get chronological order
-    allMessages.sort((a, b) => {
-      const position = a.element.compareDocumentPosition(b.element);
-      if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-      if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-      return 0;
+      const role: ChatRole = msgId.startsWith(AI_MESSAGE_PREFIX) ? 'assistant' : 'user';
+      results.push({ element: el as HTMLElement, role, messageId: msgId });
     });
 
-    return allMessages;
+    return results;
   }
 
-  /**
-   * Returns all messages in the current conversation
-   */
   getMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
     const allMessages = this.findMessageElements();
 
-    allMessages.forEach((msg, index) => {
+    allMessages.forEach(msg => {
       const text = this.extractMessageText(msg.element);
 
       if (text) {
-        const messageId = this.generateMessageId(index, text);
-
         messages.push({
-          messageId,
+          messageId: msg.messageId,
           role: msg.role,
           text,
-          domSelector: msg.role === 'user' ? USER_SELECTORS[0] : ASSISTANT_SELECTORS[0]
+          domSelector: `[data-message-id="${msg.messageId}"]`
         });
       }
     });
@@ -152,9 +90,6 @@ class LovableAdapter implements ChatAdapter {
     return messages;
   }
 
-  /**
-   * Observes for new messages
-   */
   observeNewMessages(onChange: () => void): () => void {
     if (this.messageObserver) {
       this.messageObserver.disconnect();
@@ -164,7 +99,10 @@ class LovableAdapter implements ChatAdapter {
       onChange();
     });
 
-    this.messageObserver.observe(document.body, {
+    // Observe the chat panel if available, otherwise fall back to body
+    const chatPanel = document.querySelector(CHAT_PANEL_SELECTOR) || document.body;
+
+    this.messageObserver.observe(chatPanel, {
       childList: true,
       subtree: true
     });
@@ -177,29 +115,15 @@ class LovableAdapter implements ChatAdapter {
     };
   }
 
-  /**
-   * Scrolls to a specific message
-   */
   scrollToMessage(messageId: string): boolean {
-    const messages = this.getMessages();
-    const targetIndex = messages.findIndex(m => m.messageId === messageId);
-
-    if (targetIndex === -1) return false;
-
-    const allElements = this.findMessageElements();
-
-    if (targetIndex < allElements.length) {
-      const element = allElements[targetIndex].element;
-      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const el = document.querySelector(`[data-message-id="${messageId}"]`) as HTMLElement | null;
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return true;
     }
-
     return false;
   }
 
-  /**
-   * Observes for conversation changes (project navigation)
-   */
   onConversationChange(onChange: () => void): () => void {
     this.lastConversationId = this.getConversationId();
 
@@ -220,25 +144,16 @@ class LovableAdapter implements ChatAdapter {
     };
   }
 
-  /**
-   * Normalizes title text
-   */
   private normalizeTitle(text: string): string {
     return text.replace(/\s+/g, ' ').trim().substring(0, 80);
   }
 
-  /**
-   * Returns a timestamp-based fallback title
-   */
   private getTimestampFallback(): TitleResult {
     const now = new Date();
     const ts = now.toISOString().slice(0, 16).replace('T', ' ');
     return { value: `Project – ${ts}`, source: 'fallback' };
   }
 
-  /**
-   * Derives title from first user message
-   */
   private getDerivedTitle(): TitleResult | null {
     const messages = this.getMessages();
     const firstUser = messages.find(m => m.role === 'user');
@@ -248,10 +163,6 @@ class LovableAdapter implements ChatAdapter {
     return null;
   }
 
-  /**
-   * Gets the conversation title
-   * Resolution order: document.title → first user message → timestamp
-   */
   getConversationTitle(): TitleResult {
     const docTitle = document.title;
     const lovableBranding = ['Lovable', 'lovable.dev'];
@@ -274,9 +185,6 @@ class LovableAdapter implements ChatAdapter {
     return this.getTimestampFallback();
   }
 
-  /**
-   * Observes for title changes
-   */
   observeTitleChanges(onChange: () => void): () => void {
     if (this.titleObserver) {
       this.titleObserver.disconnect();
@@ -302,7 +210,4 @@ class LovableAdapter implements ChatAdapter {
   }
 }
 
-/**
- * Singleton instance of the Lovable adapter
- */
 export const lovableAdapter: ChatAdapter = new LovableAdapter();
