@@ -30,6 +30,8 @@ class LovableAdapter implements ChatAdapter {
   private messageObserver: MutationObserver | null = null;
   private titleObserver: MutationObserver | null = null;
   private lastConversationId: string | null = null;
+  private messageCache = new Map<string, ChatMessage>();
+  private cachedConversationId: string | null = null;
 
   match(url: URL): boolean {
     return url.hostname === 'lovable.dev';
@@ -72,7 +74,10 @@ class LovableAdapter implements ChatAdapter {
     return results;
   }
 
-  getMessages(): ChatMessage[] {
+  /**
+   * Reads messages currently visible in the DOM
+   */
+  private readDomMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
     const allMessages = this.findMessageElements();
 
@@ -98,6 +103,29 @@ class LovableAdapter implements ChatAdapter {
     });
 
     return messages;
+  }
+
+  /**
+   * Returns all messages, using a cache to survive DOM virtualization.
+   * Lovable removes off-screen messages from the DOM when scrolling,
+   * so we merge current DOM messages into a persistent cache.
+   */
+  getMessages(): ChatMessage[] {
+    // Clear cache if conversation changed
+    const currentConvId = this.getConversationId();
+    if (currentConvId !== this.cachedConversationId) {
+      this.messageCache.clear();
+      this.cachedConversationId = currentConvId;
+    }
+
+    // Read current DOM and merge into cache
+    const domMessages = this.readDomMessages();
+    for (const msg of domMessages) {
+      this.messageCache.set(msg.messageId, msg);
+    }
+
+    // Return all cached messages
+    return Array.from(this.messageCache.values());
   }
 
   observeNewMessages(onChange: () => void): () => void {

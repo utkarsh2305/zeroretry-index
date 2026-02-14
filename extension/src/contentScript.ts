@@ -490,7 +490,7 @@ function buildTOCLabel(text: string): string {
 }
 
 // Minimum length for a message to appear in index
-const MIN_MESSAGE_LENGTH = 10;
+const MIN_MESSAGE_LENGTH = 40;
 
 // Known filler phrases to skip (case-insensitive, exact match)
 const FILLER_PHRASES = new Set([
@@ -503,7 +503,12 @@ const FILLER_PHRASES = new Set([
   'got it', 'understood', 'i see', 'makes sense',
   'hmm', 'hm', 'ah', 'oh', 'uh',
   'continue', 'go on', 'go ahead', 'next',
-  'done', 'finished', 'good', 'perfect'
+  'done', 'finished', 'good', 'perfect',
+  'plan approved', 'plan approved.', 'approved', 'approved.',
+  'looks good', 'sounds good', 'that works',
+  'yes please', 'agreed', 'confirmed', 'noted',
+  "let's do it", 'lets do it', 'proceed',
+  'lgtm', 'ship it', 'do it', 'go for it'
 ]);
 
 /**
