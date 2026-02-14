@@ -42,7 +42,10 @@ class CopilotAdapter implements ChatAdapter {
    * Checks if the given URL is for Microsoft Copilot
    */
   match(url: URL): boolean {
-    return url.hostname === 'copilot.microsoft.com';
+    if (url.hostname === 'copilot.microsoft.com') return true;
+    if ((url.hostname === 'www.bing.com' || url.hostname === 'bing.com')
+        && url.pathname.startsWith('/chat')) return true;
+    return false;
   }
 
   /**

@@ -17,6 +17,8 @@
         "https://x.com/i/grok*",
         "https://gemini.google.com/*",
         "https://copilot.microsoft.com/*",
+        "https://www.bing.com/chat*",
+        "https://bing.com/chat*",
         "https://lovable.dev/*"
       ],
       "js": ["dist/contentScript.js"],

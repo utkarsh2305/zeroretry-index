@@ -2132,8 +2132,16 @@ function bootTOC(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, sess
 
   log('Session', session.version, 'boot started');
 
-  // Start immediate retry loop
-  attemptLoad();
+  // If adapter supports preloading (e.g., Lovable infinite scroll), load all messages first
+  if (adapter.preloadAllMessages) {
+    adapter.preloadAllMessages().then(() => {
+      if (isSessionCurrent(session)) {
+        attemptLoad();
+      }
+    });
+  } else {
+    attemptLoad();
+  }
 }
 
 // Start the extension

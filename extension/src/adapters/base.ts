@@ -114,4 +114,11 @@ export interface ChatAdapter {
    * @returns Unsubscribe function to stop observing
    */
   observeTitleChanges(onChange: () => void): () => void;
+
+  /**
+   * Optional: trigger lazy-loaded content to fully load before indexing.
+   * Platforms that use infinite scroll (e.g., Lovable) implement this to
+   * programmatically scroll up and load all messages into the DOM.
+   */
+  preloadAllMessages?(): Promise<void>;
 }
