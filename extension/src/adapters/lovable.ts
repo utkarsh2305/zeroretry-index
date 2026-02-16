@@ -145,11 +145,25 @@ class LovableAdapter implements ChatAdapter {
       subtree: true
     });
 
+    // Scroll listener: Lovable virtualizes messages (only viewport messages in DOM).
+    // Capture scroll events to detect when new messages become visible.
+    let scrollDebounce: ReturnType<typeof setTimeout> | null = null;
+    const onScroll = () => {
+      if (scrollDebounce) clearTimeout(scrollDebounce);
+      scrollDebounce = setTimeout(() => {
+        onChange();
+      }, 300);
+    };
+
+    document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+
     return () => {
       if (this.messageObserver) {
         this.messageObserver.disconnect();
         this.messageObserver = null;
       }
+      document.removeEventListener('scroll', onScroll, { capture: true });
+      if (scrollDebounce) clearTimeout(scrollDebounce);
     };
   }
 
@@ -247,36 +261,6 @@ class LovableAdapter implements ChatAdapter {
     };
   }
 
-  /**
-   * Scrolls the chat container upward repeatedly to trigger lazy-loading
-   * of all older messages before indexing begins.
-   */
-  async preloadAllMessages(): Promise<void> {
-    const chatPanel = document.querySelector(CHAT_PANEL_SELECTOR) as HTMLElement | null;
-    if (!chatPanel) return;
-
-    // Find the scrollable container
-    const scrollable = chatPanel.scrollHeight > chatPanel.clientHeight
-      ? chatPanel
-      : (chatPanel.querySelector('[style*="overflow"]') as HTMLElement) || chatPanel;
-
-    let lastCount = document.querySelectorAll(MESSAGE_SELECTOR).length;
-    let attempts = 0;
-    const MAX_ATTEMPTS = 20;
-
-    while (attempts < MAX_ATTEMPTS) {
-      scrollable.scrollTop = 0;
-      await new Promise(r => setTimeout(r, 600));
-
-      const newCount = document.querySelectorAll(MESSAGE_SELECTOR).length;
-      if (newCount === lastCount) break;
-      lastCount = newCount;
-      attempts++;
-    }
-
-    // Restore scroll to bottom so user sees latest messages
-    scrollable.scrollTop = scrollable.scrollHeight;
-  }
 }
 
 export const lovableAdapter: ChatAdapter = new LovableAdapter();

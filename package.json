@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",
-    "build": "vite build"
+    "build": "vite build && npx esbuild extension/src/background.ts --bundle --outfile=extension/dist/background.js --format=iife --target=es2020 && npx esbuild extension/src/welcome.ts --bundle --outfile=extension/dist/welcome.js --format=iife --target=es2020"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.36",

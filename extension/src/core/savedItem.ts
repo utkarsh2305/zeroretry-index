@@ -50,6 +50,8 @@ export interface SavedItem {
   sourcePlatform: ChatPlatformId;
   /** Full message text (not truncated) for continuation context */
   fullMessageText: string;
+  /** Optional AI response following the saved message */
+  aiResponseText?: string;
   /** Optional continuation context (Level 1) */
   continuation?: ContinuationContext;
   /** Timestamp of last modification */
@@ -81,8 +83,7 @@ export const PLATFORM_INFO: Record<ChatPlatformId, { name: string; newChatUrl: s
   perplexity: { name: 'Perplexity', newChatUrl: 'https://www.perplexity.ai/' },
   grok: { name: 'Grok', newChatUrl: 'https://x.com/i/grok' },
   gemini: { name: 'Gemini', newChatUrl: 'https://gemini.google.com/app' },
-  copilot: { name: 'Copilot', newChatUrl: 'https://copilot.microsoft.com/' },
-  lovable: { name: 'Lovable', newChatUrl: 'https://lovable.dev/' }
+  copilot: { name: 'Copilot', newChatUrl: 'https://copilot.microsoft.com/' }
 };
 
 /**
@@ -92,9 +93,21 @@ export function createSavedItem(
   message: ChatMessage,
   messageIndex: number,
   conversationKey: string,
-  platformId: ChatPlatformId
+  platformId: ChatPlatformId,
+  allMessages?: ChatMessage[]
 ): SavedItem {
   const now = Date.now();
+
+  // Try to find the next message (AI response)
+  let aiResponseText: string | undefined;
+  if (allMessages && messageIndex + 1 < allMessages.length) {
+    const nextMessage = allMessages[messageIndex + 1];
+    // Only capture if it looks like an AI response (role is assistant or ai)
+    if (nextMessage.role === 'assistant' || nextMessage.role === 'ai') {
+      aiResponseText = nextMessage.text;
+    }
+  }
+
   return {
     id: generateId(),
     conversationKey,
@@ -108,6 +121,7 @@ export function createSavedItem(
     cachedText: message.text.substring(0, 100).replace(/\s+/g, ' ').trim(),
     sourcePlatform: platformId,
     fullMessageText: message.text,
+    aiResponseText,
     schemaVersion: 1
   };
 }
@@ -186,7 +200,7 @@ export function resolveSavedItems(
  * Gets available continuation target platforms (excludes current)
  */
 export function getAvailableTargets(currentPlatform: ChatPlatformId): ChatPlatformId[] {
-  const all: ChatPlatformId[] = ['chatgpt', 'claude', 'perplexity', 'grok', 'gemini', 'copilot', 'lovable'];
+  const all: ChatPlatformId[] = ['chatgpt', 'claude', 'perplexity', 'grok', 'gemini', 'copilot'];
   return all.filter(p => p !== currentPlatform);
 }
 
@@ -276,8 +290,6 @@ export function getConversationUrl(platform: ChatPlatformId, conversationKey: st
       return `https://gemini.google.com/app/${convId}`;
     case 'copilot':
       return `https://copilot.microsoft.com/c/${convId}`;
-    case 'lovable':
-      return `https://lovable.dev/projects/${convId}`;
     default:
       return PLATFORM_INFO[platform].newChatUrl;
   }

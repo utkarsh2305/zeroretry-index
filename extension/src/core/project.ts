@@ -19,6 +19,8 @@ export interface Project {
   createdAt: number;
   /** Last modification timestamp */
   modifiedAt: number;
+  /** IDs of saved items in this project */
+  itemIds?: string[];
 }
 
 /**
@@ -31,6 +33,7 @@ export function createProject(name: string, description?: string): Project {
     name,
     description,
     createdAt: now,
-    modifiedAt: now
+    modifiedAt: now,
+    itemIds: []
   };
 }

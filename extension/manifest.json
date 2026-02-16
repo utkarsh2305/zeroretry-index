@@ -7,6 +7,9 @@
     "storage",
     "clipboardWrite"
   ],
+  "background": {
+    "service_worker": "dist/background.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -18,8 +21,7 @@
         "https://gemini.google.com/*",
         "https://copilot.microsoft.com/*",
         "https://www.bing.com/chat*",
-        "https://bing.com/chat*",
-        "https://lovable.dev/*"
+        "https://bing.com/chat*"
       ],
       "js": ["dist/contentScript.js"],
       "run_at": "document_idle"

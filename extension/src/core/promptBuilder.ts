@@ -55,10 +55,22 @@ function buildSimplePrompt(item: SavedItem): string {
     '',
     '---',
     truncatedText,
-    '---',
-    '',
-    'Based on this context, please help me continue. What would you like to know or discuss?'
+    '---'
   );
+
+  // Include AI response if available
+  if (item.aiResponseText) {
+    parts.push(
+      '',
+      '**AI Response:**',
+      item.aiResponseText,
+      ''
+    );
+  } else {
+    parts.push('');
+  }
+
+  parts.push('Based on this context, please help me continue. What would you like to know or discuss?');
 
   return parts.join('\n');
 }
@@ -108,6 +120,15 @@ function buildFullPrompt(
   parts.push(truncatedText);
   parts.push('```');
   parts.push('');
+
+  // AI Response (optional)
+  if (item.aiResponseText) {
+    parts.push('## AI Response');
+    parts.push('```');
+    parts.push(item.aiResponseText);
+    parts.push('```');
+    parts.push('');
+  }
 
   // Next question - the actual prompt
   parts.push('## Question');

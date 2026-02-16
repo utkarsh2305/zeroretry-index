@@ -47,12 +47,40 @@ const SIDEBAR_PROJECTS_PANEL_ID = 'zeroretry-projects-panel';
 // Debug flag - set to true to enable logging
 const DEBUG = false;
 
+// Global UI state for bookmarks view mode
+let bookmarksViewMode: BookmarksViewMode = 'conversation';
+
+/**
+ * Saves the current bookmarks view mode to storage
+ */
+async function saveBookmarksViewMode(mode: BookmarksViewMode): Promise<void> {
+  try {
+    await chrome.storage.session.set({ 'zeroretry-bookmarks-view-mode': mode });
+  } catch (err) {
+    console.error('[ZeroRetry Index] Failed to save bookmarks view mode:', err);
+  }
+}
+
+/**
+ * Loads the bookmarks view mode from storage
+ */
+async function loadBookmarksViewMode(): Promise<BookmarksViewMode> {
+  try {
+    const result = await chrome.storage.session.get('zeroretry-bookmarks-view-mode');
+    return (result['zeroretry-bookmarks-view-mode'] as BookmarksViewMode) || 'conversation';
+  } catch (err) {
+    console.error('[ZeroRetry Index] Failed to load bookmarks view mode:', err);
+    return 'conversation';
+  }
+}
+
 // Global UI state: 'expanded' | 'collapsed' | 'minimized'
 type UIState = 'expanded' | 'collapsed' | 'minimized';
 let uiState: UIState = 'expanded';
 
 // Tab state
-type SidebarTab = 'index' | 'saved' | 'projects';
+type SidebarTab = 'index' | 'bookmarks';
+type BookmarksViewMode = 'conversation' | 'all-projects' | 'related-projects';
 let activeTab: SidebarTab = 'index';
 
 // Search state
@@ -292,14 +320,9 @@ function applyTheme(): void {
     closeBtn.style.color = t.closeBtnText;
   }
 
-  // Re-render saved panel if active
-  if (activeTab === 'saved' && currentSession) {
-    renderSavedPanel(currentSession);
-  }
-
-  // Re-render projects panel if active
-  if (activeTab === 'projects') {
-    renderProjectsPanel();
+  // Re-render bookmarks panel if active
+  if (activeTab === 'bookmarks' && currentSession) {
+    renderBookmarksPanel(currentSession);
   }
 
   log('Theme applied:', currentTheme);
@@ -645,10 +668,14 @@ function refreshTOC(
         });
 
         // Bookmark click handler
-        bookmarkBtn.addEventListener('click', (e) => {
+        bookmarkBtn.addEventListener('click', async (e) => {
           e.stopPropagation();
-          if (session) {
-            toggleSave(msg, index, session, bookmarkBtn);
+          // Always use current session instead of closure-captured session
+          if (currentSession && isSessionCurrent(currentSession)) {
+            await toggleSave(msg, index, currentSession, bookmarkBtn, adapter);
+          } else {
+            console.warn('[ZeroRetry Index] BOOKMARK: No active session');
+            bookmarkBtn.title = 'Error: No active session';
           }
         });
 
@@ -866,25 +893,16 @@ function injectSidebar(): void {
   styleTab(tocTab, true);
   tocTab.addEventListener('click', () => switchTab('index'));
 
-  // Bookmarks tab
+  // Unified Bookmarks tab (Saved + Projects merged)
   const bookmarksTab = document.createElement('button');
   bookmarksTab.id = SIDEBAR_SAVED_TAB_ID;
-  bookmarksTab.textContent = '★ Saved';
+  bookmarksTab.textContent = '★ Bookmarks';
   bookmarksTab.className = 'zeroretry-tab';
   styleTab(bookmarksTab, false);
-  bookmarksTab.addEventListener('click', () => switchTab('saved'));
-
-  // Projects tab
-  const projectsTab = document.createElement('button');
-  projectsTab.id = SIDEBAR_PROJECTS_TAB_ID;
-  projectsTab.textContent = 'Projects';
-  projectsTab.className = 'zeroretry-tab';
-  styleTab(projectsTab, false);
-  projectsTab.addEventListener('click', () => switchTab('projects'));
+  bookmarksTab.addEventListener('click', () => switchTab('bookmarks'));
 
   tabBar.appendChild(tocTab);
   tabBar.appendChild(bookmarksTab);
-  tabBar.appendChild(projectsTab);
   body.appendChild(tabBar);
 
   // Search input container
@@ -1359,81 +1377,95 @@ async function toggleSave(
   msg: ChatMessage,
   msgIndex: number,
   session: Session,
-  saveBtn: HTMLElement
+  saveBtn: HTMLElement,
+  adapter?: NonNullable<ReturnType<typeof getAdapterForUrl>>
 ): Promise<void> {
   if (!session.conversationKey || !session.platformId) {
-    console.log('[ZeroRetry Index] TOGGLE_SAVE: SKIPPED - no convKey or platformId');
+    const reason = !session.conversationKey ? 'no conversationKey' : 'no platformId';
+    console.error('[ZeroRetry Index] TOGGLE_SAVE: FAILED -', reason);
+    saveBtn.title = 'Error: ' + reason;
     return;
   }
 
-  const isSaved = session.savedMessageIds.has(msg.messageId);
+  if (!isSessionCurrent(session)) {
+    console.warn('[ZeroRetry Index] TOGGLE_SAVE: Session no longer current');
+    return;
+  }
 
-  if (isSaved) {
-    // Remove saved item
-    const removed = await removeSavedItemByMessageId(session.conversationKey, msg.messageId);
-    if (removed) {
-      session.savedMessageIds.delete(msg.messageId);
-      session.savedItems = session.savedItems.filter((item: ResolvedSavedItem) => item.anchor.messageId !== msg.messageId);
+  try {
+    const isSaved = session.savedMessageIds.has(msg.messageId);
 
-      // If Saved tab is active, re-render to reflect removal
-      if (activeTab === 'saved') {
-        renderSavedPanel(session);
-      }
+    if (isSaved) {
+      // Remove saved item
+      const removed = await removeSavedItemByMessageId(session.conversationKey, msg.messageId);
+      if (removed) {
+        session.savedMessageIds.delete(msg.messageId);
+        session.savedItems = session.savedItems.filter((item: ResolvedSavedItem) => item.anchor.messageId !== msg.messageId);
 
-      saveBtn.innerHTML = '☆';
-      saveBtn.style.color = '#9ca3af';
-      saveBtn.title = 'Save';
-      console.log('[ZeroRetry Index] UNSAVED:', msg.messageId, 'remaining:', session.savedItems.length);
-    }
-  } else {
-    // Add saved item
-    const savedItem = createSavedItem(msg, msgIndex, session.conversationKey, session.platformId as ChatPlatformId);
-    await addSavedItem(savedItem);
-    session.savedMessageIds.add(msg.messageId);
-    session.savedItems.push({ ...savedItem, status: 'active', resolvedMessageId: msg.messageId });
-
-    // If Saved tab is active, re-render to show new item
-    if (activeTab === 'saved') {
-      renderSavedPanel(session);
-    }
-
-    saveBtn.innerHTML = '★';
-    saveBtn.style.color = '#f59e0b';
-    saveBtn.title = 'Remove';
-    console.log('[ZeroRetry Index] SAVED:', msg.messageId, 'convKey:', session.conversationKey, 'total:', session.savedItems.length);
-
-    // Show project selector dropdown
-    const sidebarBody = document.getElementById(SIDEBAR_BODY_ID);
-    if (sidebarBody) {
-      try {
-        const projects = await loadProjects();
-        if (projects.length > 0) {
-          showProjectSelector(
-            saveBtn,
-            sidebarBody,
-            projects,
-            themes[currentTheme],
-            async (projectId) => {
-              if (projectId) {
-                await assignItemToProject(savedItem.id, projectId);
-                console.log('[ZeroRetry Index] ASSIGNED to project:', projectId);
-              }
-            },
-            async () => {
-              // Inline form will be shown by projectSelector
-              const name = await showInlineNamePrompt(sidebarBody, themes[currentTheme]);
-              if (!name) return;
-              const project = createProject(name);
-              await addProjectToStorage(project);
-              await assignItemToProject(savedItem.id, project.id);
-              console.log('[ZeroRetry Index] CREATED+ASSIGNED project:', project.id);
-            }
-          );
+        // If bookmarks tab is active, re-render to reflect removal
+        if (activeTab === 'bookmarks') {
+          renderBookmarksPanel(session);
         }
-      } catch (err) {
-        console.log('[ZeroRetry Index] PROJECT_SELECTOR_ERROR:', err);
+
+        saveBtn.innerHTML = '☆';
+        saveBtn.style.color = '#9ca3af';
+        saveBtn.title = 'Save';
+        console.log('[ZeroRetry Index] UNSAVED:', msg.messageId, 'remaining:', session.savedItems.length);
+      }
+    } else {
+      // Add saved item
+      const allMessages = adapter ? adapter.getMessages() : [];
+      const savedItem = createSavedItem(msg, msgIndex, session.conversationKey, session.platformId as ChatPlatformId, allMessages);
+      await addSavedItem(savedItem);
+      session.savedMessageIds.add(msg.messageId);
+      session.savedItems.push({ ...savedItem, status: 'active', resolvedMessageId: msg.messageId });
+
+      // If bookmarks tab is active, re-render to show new item
+      if (activeTab === 'bookmarks') {
+        renderBookmarksPanel(session);
+      }
+
+      saveBtn.innerHTML = '★';
+      saveBtn.style.color = '#f59e0b';
+      saveBtn.title = 'Remove';
+      console.log('[ZeroRetry Index] SAVED:', msg.messageId, 'convKey:', session.conversationKey, 'total:', session.savedItems.length);
+
+      // Show project selector dropdown
+      const sidebarBody = document.getElementById(SIDEBAR_BODY_ID);
+      if (sidebarBody) {
+        try {
+          const projects = await loadProjects();
+          if (projects.length > 0) {
+            showProjectSelector(
+              saveBtn,
+              sidebarBody,
+              projects,
+              themes[currentTheme],
+              async (projectId) => {
+                if (projectId) {
+                  await assignItemToProject(savedItem.id, projectId);
+                  console.log('[ZeroRetry Index] ASSIGNED to project:', projectId);
+                }
+              },
+              async () => {
+                // Inline form will be shown by projectSelector
+                const name = await showInlineNamePrompt(sidebarBody, themes[currentTheme]);
+                if (!name) return;
+                const project = createProject(name);
+                await addProjectToStorage(project);
+                await assignItemToProject(savedItem.id, project.id);
+                console.log('[ZeroRetry Index] CREATED+ASSIGNED project:', project.id);
+              }
+            );
+          }
+        } catch (err) {
+          console.error('[ZeroRetry Index] Error in project selector:', err);
+        }
       }
     }
+  } catch (err) {
+    console.error('[ZeroRetry Index] TOGGLE_SAVE error:', err);
+    saveBtn.title = 'Error: ' + (err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -1457,31 +1489,27 @@ function styleTab(tab: HTMLElement, isActive: boolean): void {
 }
 
 /**
- * Switches between Index and Saved tabs
+ * Switches between Index and Bookmarks tabs
  */
 function switchTab(tab: SidebarTab): void {
   console.log('[ZeroRetry Index] SWITCH_TAB:', tab, 'session?', !!currentSession, 'items:', currentSession?.savedItems.length);
   activeTab = tab;
 
   const tocTab = document.getElementById(SIDEBAR_TOC_TAB_ID);
-  const savedTab = document.getElementById(SIDEBAR_SAVED_TAB_ID);
-  const projectsTab = document.getElementById(SIDEBAR_PROJECTS_TAB_ID);
+  const bookmarksTab = document.getElementById(SIDEBAR_SAVED_TAB_ID);
   const toc = document.getElementById(SIDEBAR_TOC_ID);
-  const savedPanel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
-  const projectsPanel = document.getElementById(SIDEBAR_PROJECTS_PANEL_ID);
+  const bookmarksPanel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
   const loading = document.getElementById(SIDEBAR_LOADING_ID);
   const empty = document.getElementById(SIDEBAR_EMPTY_ID);
   const searchContainer = document.getElementById('zeroretry-search-container');
 
   // Style all tabs
   if (tocTab) styleTab(tocTab, tab === 'index');
-  if (savedTab) styleTab(savedTab, tab === 'saved');
-  if (projectsTab) styleTab(projectsTab, tab === 'projects');
+  if (bookmarksTab) styleTab(bookmarksTab, tab === 'bookmarks');
 
   // Hide all panels first
   if (toc) toc.style.display = 'none';
-  if (savedPanel) savedPanel.style.display = 'none';
-  if (projectsPanel) projectsPanel.style.display = 'none';
+  if (bookmarksPanel) bookmarksPanel.style.display = 'none';
   if (searchContainer) searchContainer.style.display = 'none';
   if (loading) loading.style.display = 'none';
   if (empty) empty.style.display = 'none';
@@ -1489,34 +1517,116 @@ function switchTab(tab: SidebarTab): void {
   if (tab === 'index') {
     if (toc) toc.style.display = 'block';
     if (searchContainer) searchContainer.style.display = 'block';
-  } else if (tab === 'saved') {
-    if (savedPanel) savedPanel.style.display = 'block';
+  } else if (tab === 'bookmarks') {
+    if (bookmarksPanel) bookmarksPanel.style.display = 'block';
     if (currentSession) {
-      renderSavedPanel(currentSession);
+      // Load saved view mode from storage before rendering
+      loadBookmarksViewMode().then(mode => {
+        bookmarksViewMode = mode;
+        renderBookmarksPanel(currentSession!);
+      });
     }
-  } else if (tab === 'projects') {
-    if (projectsPanel) projectsPanel.style.display = 'flex';
-    renderProjectsPanel();
   }
 }
 
 /**
- * Renders the saved panel content - shows only current conversation's saved items
+ * Renders the unified bookmarks panel with view mode filter
+ * Supports: conversation bookmarks, all projects, related projects
  */
-async function renderSavedPanel(session: Session): Promise<void> {
+async function renderBookmarksPanel(session: Session): Promise<void> {
   const panel = document.getElementById(SIDEBAR_SAVED_PANEL_ID);
   if (!panel) return;
+
+  console.log('[ZeroRetry Index] renderBookmarksPanel called, bookmarksViewMode=', bookmarksViewMode, 'currentSession=', !!currentSession);
 
   panel.innerHTML = '';
   const t = themes[currentTheme];
 
+  // Create view mode selector
+  const selectorContainer = document.createElement('div');
+  Object.assign(selectorContainer.style, {
+    padding: '8px 12px',
+    borderBottom: `1px solid ${t.headerBorder}`,
+    backgroundColor: t.headerBg,
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px'
+  });
+
+  const label = document.createElement('span');
+  label.textContent = 'View:';
+  label.style.fontSize = '12px';
+  label.style.color = t.textMuted;
+
+  const select = document.createElement('select');
+  select.value = bookmarksViewMode;
+  select.style.fontSize = '12px';
+  select.style.padding = '4px';
+  select.style.backgroundColor = t.inputBg;
+  select.style.color = t.text;
+  select.style.border = `1px solid ${t.itemBorder}`;
+  select.style.borderRadius = '4px';
+  select.style.cursor = 'pointer';
+
+  const optConversation = document.createElement('option');
+  optConversation.value = 'conversation';
+  optConversation.textContent = 'This conversation';
+
+  const optRelated = document.createElement('option');
+  optRelated.value = 'related-projects';
+  optRelated.textContent = 'Related projects';
+
+  const optAll = document.createElement('option');
+  optAll.value = 'all-projects';
+  optAll.textContent = 'All projects';
+
+  select.appendChild(optConversation);
+  select.appendChild(optRelated);
+  select.appendChild(optAll);
+
+  select.addEventListener('change', (e) => {
+    const newMode = (e.target as HTMLSelectElement).value as BookmarksViewMode;
+    console.log('[ZeroRetry Index] DROPDOWN CHANGE EVENT:', { oldMode: bookmarksViewMode, newMode, selectValue: (e.target as HTMLSelectElement).value });
+    bookmarksViewMode = newMode;
+    saveBookmarksViewMode(newMode);
+    renderBookmarksPanel(session);
+  });
+
+  selectorContainer.appendChild(label);
+  selectorContainer.appendChild(select);
+  panel.appendChild(selectorContainer);
+
+  // Render based on view mode
+  console.log('[ZeroRetry Index] About to render, bookmarksViewMode=', bookmarksViewMode);
+  if (bookmarksViewMode === 'conversation') {
+    console.log('[ZeroRetry Index] Rendering CONVERSATION view');
+    await renderConversationBookmarks(panel, session, t);
+  } else if (bookmarksViewMode === 'related-projects') {
+    console.log('[ZeroRetry Index] Rendering RELATED_PROJECTS view');
+    await renderRelatedProjects(panel, session, t);
+  } else if (bookmarksViewMode === 'all-projects') {
+    console.log('[ZeroRetry Index] Rendering ALL_PROJECTS view');
+    await renderAllProjects(panel, t);
+  } else {
+    console.log('[ZeroRetry Index] ERROR: Unknown bookmarksViewMode=', bookmarksViewMode);
+  }
+}
+
+/**
+ * Renders conversation-specific bookmarks
+ */
+async function renderConversationBookmarks(
+  panel: HTMLElement,
+  session: Session,
+  t: ReturnType<typeof getTheme>
+): Promise<void> {
   // Load projects for assignment UI
   let projects: Awaited<ReturnType<typeof loadProjects>> = [];
   try { projects = await loadProjects(); } catch { /* ignore */ }
 
   // Only show items from current conversation
   const items = session.savedItems;
-  console.log('[ZeroRetry Index] RENDER_SAVED: items=' + items.length, 'convKey:', session.conversationKey, 'v:', session.version);
+  console.log('[ZeroRetry Index] RENDER_CONVERSATION_BOOKMARKS: items=' + items.length, 'convKey:', session.conversationKey, 'v:', session.version);
 
   if (items.length === 0) {
     // Fallback: try loading from storage in case in-memory state was lost
@@ -1530,14 +1640,14 @@ async function renderSavedPanel(session: Session): Promise<void> {
             resolvedMessageId: item.anchor.messageId
           }));
           session.savedMessageIds = new Set(stored.map(i => i.anchor.messageId));
-          renderSavedPanel(session); // Re-render with loaded items
+          renderBookmarksPanel(session); // Re-render with loaded items
         }
       });
     }
 
     const emptyMsg = document.createElement('div');
     emptyMsg.className = 'zeroretry-saved-empty';
-    emptyMsg.textContent = 'No saved items in this conversation';
+    emptyMsg.textContent = 'No bookmarks in this conversation';
     Object.assign(emptyMsg.style, {
       padding: '24px 16px',
       textAlign: 'center',
@@ -1559,7 +1669,7 @@ async function renderSavedPanel(session: Session): Promise<void> {
         await removeSavedItem(id);
         session.savedItems = session.savedItems.filter(i => i.id !== id);
         session.savedMessageIds.delete(item.anchor.messageId);
-        renderSavedPanel(session);
+        renderBookmarksPanel(session);
         // Re-render TOC to update bookmark indicators
         if (adapter) refreshTOC(adapter, false, false, session);
       },
@@ -1567,7 +1677,7 @@ async function renderSavedPanel(session: Session): Promise<void> {
         // Refresh saved items after update
         if (adapter) {
           await resolveAndCacheBookmarks(adapter, session);
-          renderSavedPanel(session);
+          renderBookmarksPanel(session);
         }
       },
       scrollToMessage: (messageId: string) => {
@@ -1576,6 +1686,152 @@ async function renderSavedPanel(session: Session): Promise<void> {
     }, projects);
     panel.appendChild(itemElement);
   });
+}
+
+/**
+ * Renders related projects - projects containing this conversation's bookmarks
+ */
+async function renderRelatedProjects(
+  panel: HTMLElement,
+  session: Session,
+  t: ReturnType<typeof getTheme>
+): Promise<void> {
+  try {
+    const allProjects = await loadProjects();
+    // Get all bookmark IDs from this conversation
+    const conversationBookmarkIds = new Set(session.savedItems.map(item => item.id));
+
+    console.log('[ZeroRetry Index] RELATED_PROJECTS: conversation items=' + conversationBookmarkIds.size, 'projects=' + allProjects.length);
+
+    // Filter to projects that contain ANY items from this conversation
+    const relatedProjects = allProjects.filter(proj => {
+      const hasRelevantItems = proj.itemIds && proj.itemIds.some(itemId => conversationBookmarkIds.has(itemId));
+      if (hasRelevantItems) {
+        console.log('[ZeroRetry Index] RELATED: Found project', proj.name, 'with', proj.itemIds?.length || 0, 'items');
+      }
+      return hasRelevantItems;
+    });
+
+    if (relatedProjects.length === 0) {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.textContent = 'No related projects';
+      Object.assign(emptyMsg.style, {
+        padding: '24px 16px',
+        textAlign: 'center',
+        color: t.textMuted,
+        fontSize: '14px'
+      });
+      panel.appendChild(emptyMsg);
+      return;
+    }
+
+    // Show projects list
+    relatedProjects.forEach(proj => {
+      const projElement = document.createElement('div');
+      Object.assign(projElement.style, {
+        padding: '12px',
+        borderBottom: `1px solid ${t.itemBorder}`,
+        cursor: 'pointer',
+        transition: 'background-color 0.2s'
+      });
+
+      const projName = document.createElement('div');
+      projName.textContent = proj.name;
+      projName.style.fontWeight = 'bold';
+      projName.style.color = t.text;
+      projName.style.marginBottom = '4px';
+
+      const itemCount = document.createElement('div');
+      itemCount.textContent = `${proj.itemIds?.length || 0} items`;
+      itemCount.style.fontSize = '12px';
+      itemCount.style.color = t.textMuted;
+
+      projElement.appendChild(projName);
+      projElement.appendChild(itemCount);
+
+      projElement.addEventListener('mouseenter', () => {
+        projElement.style.backgroundColor = t.itemHover;
+      });
+      projElement.addEventListener('mouseleave', () => {
+        projElement.style.backgroundColor = 'transparent';
+      });
+      projElement.addEventListener('click', () => {
+        renderProjectDetail(proj, panel, t);
+      });
+
+      panel.appendChild(projElement);
+    });
+  } catch (err) {
+    console.error('[ZeroRetry Index] Error rendering related projects:', err);
+  }
+}
+
+/**
+ * Renders all projects
+ */
+async function renderAllProjects(
+  panel: HTMLElement,
+  t: ReturnType<typeof getTheme>
+): Promise<void> {
+  try {
+    const allProjects = await loadProjects();
+    console.log('[ZeroRetry Index] ALL_PROJECTS: Found', allProjects.length, 'projects');
+
+    if (allProjects.length === 0) {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.textContent = 'No projects yet';
+      Object.assign(emptyMsg.style, {
+        padding: '24px 16px',
+        textAlign: 'center',
+        color: t.textMuted,
+        fontSize: '14px'
+      });
+      panel.appendChild(emptyMsg);
+      return;
+    }
+
+    // Show projects list
+    allProjects.forEach(proj => {
+      const itemCount = proj.itemIds?.length || 0;
+      console.log('[ZeroRetry Index] PROJECT:', proj.name, 'items=' + itemCount);
+      
+      const projElement = document.createElement('div');
+      Object.assign(projElement.style, {
+        padding: '12px',
+        borderBottom: `1px solid ${t.itemBorder}`,
+        cursor: 'pointer',
+        transition: 'background-color 0.2s'
+      });
+
+      const projName = document.createElement('div');
+      projName.textContent = proj.name;
+      projName.style.fontWeight = 'bold';
+      projName.style.color = t.text;
+      projName.style.marginBottom = '4px';
+
+      const itemCountEl = document.createElement('div');
+      itemCountEl.textContent = `${itemCount} item${itemCount !== 1 ? 's' : ''}`;
+      itemCountEl.style.fontSize = '12px';
+      itemCountEl.style.color = t.textMuted;
+
+      projElement.appendChild(projName);
+      projElement.appendChild(itemCountEl);
+
+      projElement.addEventListener('mouseenter', () => {
+        projElement.style.backgroundColor = t.itemHover;
+      });
+      projElement.addEventListener('mouseleave', () => {
+        projElement.style.backgroundColor = 'transparent';
+      });
+      projElement.addEventListener('click', () => {
+        renderProjectDetail(proj, panel, t);
+      });
+
+      panel.appendChild(projElement);
+    });
+  } catch (err) {
+    console.error('[ZeroRetry Index] Error rendering all projects:', err);
+  }
 }
 
 // Track which project detail is being viewed (null = list view)
@@ -1926,6 +2182,10 @@ function startNewSession(adapter: NonNullable<ReturnType<typeof getAdapterForUrl
   const newSession = createSession(conversationId, currentSessionVersion, adapter.id);
   currentSession = newSession;
 
+  // Reset bookmarks view mode to 'conversation' for new session
+  bookmarksViewMode = 'conversation';
+  saveBookmarksViewMode('conversation');
+
   console.log('[ZeroRetry Index] NEW_SESSION: v=' + newSession.version, 'convId:', conversationId, 'key:', newSession.conversationKey);
 
   // Reset UI to loading
@@ -2055,37 +2315,40 @@ function bootTOC(adapter: NonNullable<ReturnType<typeof getAdapterForUrl>>, sess
     const isObserverActive = attempt < maxAttempts;
     const newSignature = refreshTOC(adapter, isLoading, isObserverActive, session);
 
-    // If we found messages and signature changed, mark complete and transition to live updates
+    // If we found messages and signature changed, resolve bookmarks then mark complete
     if (newSignature && newSignature !== '' && newSignature !== session.lastSignature) {
       if (!isSessionCurrent(session)) return;
 
       session.lastSignature = newSignature;
-      session.isComplete = true;
 
       log('Session', session.version, 'TOC loaded with', newSignature.split(',').length, 'user messages');
 
       // Update title now that we have messages
       updateTitle(adapter, session);
 
-      // Resolve bookmarks and re-render TOC with bookmark indicators
+      // Resolve bookmarks BEFORE marking session complete
+      // This ensures savedItems are populated when the UI becomes interactive
       resolveAndCacheBookmarks(adapter, session).then(() => {
-        if (isSessionCurrent(session)) {
-          refreshTOC(adapter, false, false, session);
+        if (!isSessionCurrent(session)) return;
+
+        session.isComplete = true;
+
+        // Re-render TOC with bookmark indicators after bookmarks are resolved
+        refreshTOC(adapter, false, false, session);
+
+        // Clean up boot observer and retry timeout
+        if (session.bootObserver) {
+          session.bootObserver.disconnect();
+          session.bootObserver = null;
         }
+        if (session.bootRetryTimeout) {
+          clearTimeout(session.bootRetryTimeout);
+          session.bootRetryTimeout = null;
+        }
+
+        // Transition to live update mode
+        startLiveUpdates(adapter, session);
       });
-
-      // Clean up boot observer and retry timeout
-      if (session.bootObserver) {
-        session.bootObserver.disconnect();
-        session.bootObserver = null;
-      }
-      if (session.bootRetryTimeout) {
-        clearTimeout(session.bootRetryTimeout);
-        session.bootRetryTimeout = null;
-      }
-
-      // Transition to live update mode
-      startLiveUpdates(adapter, session);
       return;
     }
 

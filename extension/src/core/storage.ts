@@ -186,7 +186,7 @@ export async function removeBookmarkByMessageId(
  */
 function extractPlatformFromKey(conversationKey: string): ChatPlatformId {
   const [platform] = conversationKey.split(':');
-  if (['chatgpt', 'claude', 'perplexity', 'grok', 'gemini', 'copilot', 'lovable'].includes(platform)) {
+  if (['chatgpt', 'claude', 'perplexity', 'grok', 'gemini', 'copilot'].includes(platform)) {
     return platform as ChatPlatformId;
   }
   return 'chatgpt'; // Fallback
@@ -448,12 +448,42 @@ export async function deleteProject(id: string): Promise<void> {
 
 /**
  * Assigns a saved item to a project
+ * Updates both the SavedItem.projectId and the Project.itemIds array
  */
 export async function assignItemToProject(
   itemId: string,
   projectId: string | undefined
 ): Promise<void> {
+  // Get the current item to find old project
+  const allItems = await loadSavedItems();
+  const item = allItems.find(i => i.id === itemId);
+  const oldProjectId = item?.projectId;
+
+  // Update the SavedItem's projectId
   await updateSavedItem(itemId, { projectId } as any);
+
+  // Update project itemIds arrays
+  const allProjects = await loadProjects();
+
+  // Remove from old project's itemIds
+  if (oldProjectId) {
+    const oldProj = allProjects.find(p => p.id === oldProjectId);
+    if (oldProj) {
+      oldProj.itemIds = (oldProj.itemIds || []).filter(id => id !== itemId);
+    }
+  }
+
+  // Add to new project's itemIds
+  if (projectId) {
+    const newProj = allProjects.find(p => p.id === projectId);
+    if (newProj) {
+      newProj.itemIds = (newProj.itemIds || []).filter(id => id !== itemId); // Remove duplicates
+      newProj.itemIds.push(itemId);
+    }
+  }
+
+  // Save updated projects
+  await saveProjects(allProjects);
 }
 
 /**

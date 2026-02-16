@@ -9,7 +9,7 @@ import { ChatAdapter, ChatMessage, ChatPlatformId, ChatRole, TitleResult } from 
  * Debug flag for Perplexity-specific logging
  * Set to true to enable detailed extraction logging
  */
-const PERPLEXITY_DEBUG = true;
+const PERPLEXITY_DEBUG = false;
 
 /**
  * Perplexity-specific debug logging

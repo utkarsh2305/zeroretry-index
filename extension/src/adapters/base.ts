@@ -12,7 +12,7 @@
 /**
  * Supported chat platforms
  */
-export type ChatPlatformId = "chatgpt" | "claude" | "perplexity" | "grok" | "gemini" | "copilot" | "lovable";
+export type ChatPlatformId = "chatgpt" | "claude" | "perplexity" | "grok" | "gemini" | "copilot";
 
 /**
  * Role of a message in a conversation
@@ -115,10 +115,4 @@ export interface ChatAdapter {
    */
   observeTitleChanges(onChange: () => void): () => void;
 
-  /**
-   * Optional: trigger lazy-loaded content to fully load before indexing.
-   * Platforms that use infinite scroll (e.g., Lovable) implement this to
-   * programmatically scroll up and load all messages into the DOM.
-   */
-  preloadAllMessages?(): Promise<void>;
 }
